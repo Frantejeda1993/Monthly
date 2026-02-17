@@ -343,10 +343,17 @@ def load_df_from_firebase(path: str) -> pd.DataFrame:
         cols = raw.get('columns') or []
         rows = _coerce_rows(raw.get('rows') or [])
 
+        if cols:
+            normalized_dict_rows = []
+            for row in rows:
+                if isinstance(row, dict):
+                    normalized_dict_rows.append({c: row.get(c) for c in cols})
+                    continue
+                row_list = list(row) if isinstance(row, (list, tuple)) else [row]
+                normalized_dict_rows.append({c: (row_list[i] if i < len(row_list) else None) for i, c in enumerate(cols)})
+            return pd.DataFrame(normalized_dict_rows, columns=cols)
+
         if rows and isinstance(rows[0], dict):
-            if cols:
-                rows = [{c: r.get(c) for c in cols} for r in rows]
-                return pd.DataFrame(rows, columns=cols)
             return pd.DataFrame(rows)
 
         if cols:
@@ -586,7 +593,7 @@ with st.sidebar:
     up_stock = st.file_uploader("INPUT (Mensual) Stock", type=["xlsx"], key='u_stock')
     up_margin_ly = st.file_uploader("INPUT (Anual) MARGIN LY", type=["xlsx"], key='u_margin')
 
-    if st.button("Guardar Excel en Firebase", use_container_width=True, disabled=not firebase_ok):
+    if st.button("Guardar Excel en Firebase", width='stretch', disabled=not firebase_ok):
         try:
             if up_ventas is not None:
                 save_df_to_firebase('datasets/mensual_ventas', read_sheet(up_ventas, 'INPUT (Mensual) Ventas'))
@@ -626,10 +633,10 @@ if page == "⚙️ Configuración de Datos":
     for tab, (path, key) in zip(tabs, table_map):
         with tab:
             df = load_df_from_firebase(path)
-            edited = st.data_editor(df, num_rows='dynamic', use_container_width=True, key=key)
+            edited = st.data_editor(df, num_rows='dynamic', width='stretch', key=key)
             c1, c2 = st.columns([1, 3])
             with c1:
-                if st.button("Guardar", key=f"save_{key}", use_container_width=True):
+                if st.button("Guardar", key=f"save_{key}", width='stretch'):
                     save_df_to_firebase(path, edited)
                     st.success("Guardado en Firebase")
             with c2:
@@ -775,7 +782,7 @@ if page == "📊 Overview · RECAP":
         fig.add_annotation(x=0.98, y=0.96, xref='paper', yref='paper',
                            text="— Budget mensual", font=dict(size=10, color='#e8ff00'),
                            showarrow=False, align='right')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with col_right:
         st.markdown('<div class="section-header">Margen % por Vertical</div>', unsafe_allow_html=True)
@@ -801,7 +808,7 @@ if page == "📊 Overview · RECAP":
                            xaxis=dict(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d'),
                            yaxis=dict(gridcolor='#252d3d', linecolor='#252d3d'),
                            bargap=0.35)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
     # ── Budget evolution ──
     st.markdown('<div class="section-header">Budget Mensual 2026 — Distribución</div>', unsafe_allow_html=True)
@@ -838,7 +845,7 @@ if page == "📊 Overview · RECAP":
                        legend=dict(orientation='h', y=1.1, x=0))
     fig3.update_yaxes(gridcolor='#252d3d', linecolor='#252d3d', secondary_y=False)
     fig3.update_yaxes(gridcolor='rgba(0,0,0,0)', linecolor='#252d3d', secondary_y=True)
-    st.plotly_chart(fig3, use_container_width=True)
+    st.plotly_chart(fig3, width='stretch')
 
     # ── Top brands table ──
     st.markdown('<div class="section-header">Top Marcas · Enero 2026</div>', unsafe_allow_html=True)
@@ -957,7 +964,7 @@ elif page == "📈 MARGINS · Marcas":
             showlegend=False, hoverinfo='skip'
         ))
         fig_sc.update_layout(**CHART_LAYOUT, height=340)
-        st.plotly_chart(fig_sc, use_container_width=True)
+        st.plotly_chart(fig_sc, width='stretch')
 
     with col_b:
         st.markdown('<div class="section-header">Margen % Budget vs LY</div>', unsafe_allow_html=True)
@@ -984,7 +991,7 @@ elif page == "📈 MARGINS · Marcas":
         fig_mg.update_layout(**CHART_LAYOUT, height=340, barmode='group', bargap=0.15,
                              yaxis=dict(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d'),
                              xaxis=dict(tickangle=-35, gridcolor='#252d3d', linecolor='#252d3d'))
-        st.plotly_chart(fig_mg, use_container_width=True)
+        st.plotly_chart(fig_mg, width='stretch')
 
     # ── Main margins table ──
     st.markdown('<div class="section-header">Tabla de Márgenes</div>', unsafe_allow_html=True)
@@ -1019,7 +1026,7 @@ elif page == "📈 MARGINS · Marcas":
                                'border-color': '#252d3d', 'font-size': '12px'})
         return styled
 
-    st.dataframe(style_margins(tbl), use_container_width=True, height=420)
+    st.dataframe(style_margins(tbl), width='stretch', height=420)
 
     # ── Stock waterfall ──
     st.markdown('<div class="section-header">Stock por Marca (Top 20)</div>', unsafe_allow_html=True)
@@ -1034,7 +1041,7 @@ elif page == "📈 MARGINS · Marcas":
     ))
     fig_stock.update_layout(**CHART_LAYOUT, height=280, bargap=0.25,
                             xaxis=dict(tickangle=-35, gridcolor='#252d3d', linecolor='#252d3d'))
-    st.plotly_chart(fig_stock, use_container_width=True)
+    st.plotly_chart(fig_stock, width='stretch')
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1183,7 +1190,7 @@ else:
         fig_bv.update_layout(**CHART_LAYOUT, height=340, barmode='group', bargap=0.2,
                              xaxis=dict(tickangle=-35, gridcolor='#252d3d', linecolor='#252d3d'),
                              legend=dict(orientation='h', y=1.1))
-        st.plotly_chart(fig_bv, use_container_width=True)
+        st.plotly_chart(fig_bv, width='stretch')
 
     with col_r:
         st.markdown('<div class="section-header">Margen % Real por Marca</div>', unsafe_allow_html=True)
@@ -1206,7 +1213,7 @@ else:
         fig_mgb.update_layout(**CHART_LAYOUT, height=340, showlegend=False,
                               xaxis=dict(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d'),
                               yaxis=dict(gridcolor='#252d3d', linecolor='#252d3d'))
-        st.plotly_chart(fig_mgb, use_container_width=True)
+        st.plotly_chart(fig_mgb, width='stretch')
 
     # ── Budget monthly distribution ──
     st.markdown('<div class="section-header">Distribución Budget Mensual 2026</div>', unsafe_allow_html=True)
@@ -1247,7 +1254,7 @@ else:
                      annotation_text=f"Media mensual {fmt_eur(bud_monthly_v)}", annotation_font_size=10)
     fig_bm.update_layout(**CHART_LAYOUT, height=260, bargap=0.2,
                          legend=dict(orientation='h', y=1.1))
-    st.plotly_chart(fig_bm, use_container_width=True)
+    st.plotly_chart(fig_bm, width='stretch')
 
     # ── Detailed brands table ──
     st.markdown('<div class="section-header">Detalle de Marcas</div>', unsafe_allow_html=True)
@@ -1282,4 +1289,4 @@ else:
     ).set_properties(**{'background-color':'#1a1f2b','color':'#d4dbe8',
                         'border-color':'#252d3d','font-size':'12px'})
 
-    st.dataframe(styled_detail, use_container_width=True, height=380)
+    st.dataframe(styled_detail, width='stretch', height=380)
