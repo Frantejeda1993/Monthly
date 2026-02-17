@@ -156,6 +156,21 @@ def _normalize_col(col):
     return str(col).strip().lower().replace(' ', '_')
 
 
+def _normalize_vertical(value):
+    key = _normalize_col(value)
+    aliases = {
+        '2_wheels': '2 WHEELS',
+        '2wheel': '2 WHEELS',
+        '2_wheel': '2 WHEELS',
+        'free_time': 'FREE TIME',
+        'freetime': 'FREE TIME',
+        'outdoor_tech': 'OUTDOOR TECH',
+        'outdoor': 'OUTDOOR TECH',
+        'varios': 'VARIOS',
+    }
+    return aliases.get(key, str(value).strip().upper() if pd.notna(value) else '—')
+
+
 def _to_records(df: pd.DataFrame):
     clean = df.copy()
     clean = clean.replace({np.nan: None})
@@ -391,6 +406,9 @@ def build_margins_table(df_estado, df_stock, df_margin_ly):
         base['Marca'] = ''
     if 'Vertical' not in base.columns:
         base['Vertical'] = '—'
+
+    base['Marca'] = base['Marca'].astype(str).str.strip()
+    base['Vertical'] = base['Vertical'].apply(_normalize_vertical)
 
     for c in ['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
         if c not in base.columns:
