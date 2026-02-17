@@ -530,14 +530,13 @@ CHART_LAYOUT = dict(
     font_family='Syne',
     font_color='#d4dbe8',
     margin=dict(l=0, r=0, t=32, b=0),
-    legend=dict(
-        bgcolor='rgba(26,31,43,0.8)',
-        bordercolor='#252d3d',
-        borderwidth=1,
-        font_size=11,
-    ),
-    xaxis=dict(gridcolor='#252d3d', linecolor='#252d3d', zerolinecolor='#252d3d'),
-    yaxis=dict(gridcolor='#252d3d', linecolor='#252d3d', zerolinecolor='#252d3d'),
+)
+
+DEFAULT_LEGEND = dict(
+    bgcolor='rgba(26,31,43,0.8)',
+    bordercolor='#252d3d',
+    borderwidth=1,
+    font_size=11,
 )
 
 VERTICAL_COLORS = {
@@ -841,7 +840,7 @@ if page == "📊 Overview · RECAP":
     ), secondary_y=True)
 
     fig3.update_layout(**CHART_LAYOUT, height=280, bargap=0.15,
-                       legend=dict(orientation='h', y=1.1, x=0))
+                       legend={**DEFAULT_LEGEND, 'orientation':'h', 'y':1.1, 'x':0})
     fig3.update_yaxes(gridcolor='#252d3d', linecolor='#252d3d', secondary_y=False)
     fig3.update_yaxes(gridcolor='rgba(0,0,0,0)', linecolor='#252d3d', secondary_y=True)
     st.plotly_chart(fig3, width='stretch')
@@ -1188,7 +1187,7 @@ else:
         ))
         fig_bv.update_layout(**CHART_LAYOUT, height=340, barmode='group', bargap=0.2,
                              xaxis=dict(tickangle=-35, gridcolor='#252d3d', linecolor='#252d3d'),
-                             legend=dict(orientation='h', y=1.1))
+                             legend={**DEFAULT_LEGEND, 'orientation':'h', 'y':1.1})
         st.plotly_chart(fig_bv, width='stretch')
 
     with col_r:
@@ -1252,7 +1251,7 @@ else:
     fig_bm.add_hline(y=bud_monthly_v, line_color='#e8ff00', line_dash='dot', line_width=1.5,
                      annotation_text=f"Media mensual {fmt_eur(bud_monthly_v)}", annotation_font_size=10)
     fig_bm.update_layout(**CHART_LAYOUT, height=260, bargap=0.2,
-                         legend=dict(orientation='h', y=1.1))
+                         legend={**DEFAULT_LEGEND, 'orientation':'h', 'y':1.1})
     st.plotly_chart(fig_bm, width='stretch')
 
     # ── Detailed brands table ──
