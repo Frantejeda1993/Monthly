@@ -804,10 +804,9 @@ if page == "📊 Overview · RECAP":
                 hovertemplate=f"<b>{vname}</b><br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
             ))
 
-        fig2.update_layout(**CHART_LAYOUT, height=320, showlegend=False,
-                           xaxis=dict(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d'),
-                           yaxis=dict(gridcolor='#252d3d', linecolor='#252d3d'),
-                           bargap=0.35)
+        fig2.update_layout(**CHART_LAYOUT, height=320, showlegend=False, bargap=0.35)
+        fig2.update_xaxes(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d')
+        fig2.update_yaxes(gridcolor='#252d3d', linecolor='#252d3d')
         st.plotly_chart(fig2, width='stretch')
 
     # ── Budget evolution ──
