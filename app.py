@@ -310,6 +310,29 @@ def save_df_to_firebase(path: str, df: pd.DataFrame):
 
 
 def load_df_from_firebase(path: str) -> pd.DataFrame:
+    def _coerce_rows(rows):
+        """Normaliza filas para evitar errores con estructuras mixtas en Firebase."""
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+        if not isinstance(rows, (list, tuple)):
+            return []
+
+        normalized = []
+        for row in rows:
+            if isinstance(row, dict):
+                normalized.append(row)
+                continue
+            if isinstance(row, (list, tuple)):
+                normalized.append(list(row))
+                continue
+            if hasattr(row, 'items'):
+                normalized.append(dict(row.items()))
+                continue
+
+            # Último recurso para filas sueltas (str/int/float/etc.)
+            normalized.append([row])
+        return normalized
+
     ref = db.reference(path)
     raw = ref.get()
     if not raw:
@@ -318,13 +341,32 @@ def load_df_from_firebase(path: str) -> pd.DataFrame:
     # Nuevo formato robusto frente a claves inválidas en Firebase.
     if isinstance(raw, dict) and raw.get('__format__') == 'table_v1':
         cols = raw.get('columns') or []
-        rows = raw.get('rows') or []
-        return pd.DataFrame(rows, columns=cols)
+        rows = _coerce_rows(raw.get('rows') or [])
+
+        if rows and isinstance(rows[0], dict):
+            if cols:
+                rows = [{c: r.get(c) for c in cols} for r in rows]
+                return pd.DataFrame(rows, columns=cols)
+            return pd.DataFrame(rows)
+
+        if cols:
+            normalized_rows = []
+            for row in rows:
+                row_list = row if isinstance(row, list) else [row]
+                if len(row_list) < len(cols):
+                    row_list = row_list + [None] * (len(cols) - len(row_list))
+                elif len(row_list) > len(cols):
+                    row_list = row_list[:len(cols)]
+                normalized_rows.append(row_list)
+            return pd.DataFrame(normalized_rows, columns=cols)
+
+        return pd.DataFrame(rows)
 
     # Compatibilidad con datasets existentes guardados como lista de registros.
     if isinstance(raw, dict):
         raw = list(raw.values())
-    return pd.DataFrame(raw)
+
+    return pd.DataFrame(_coerce_rows(raw))
 
 
 def read_sheet(uploaded_file, sheet_name):
