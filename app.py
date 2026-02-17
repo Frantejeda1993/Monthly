@@ -4,8 +4,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import numpy as np
-from html import escape
+import hashlib
+import json
 from io import BytesIO
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 import warnings
 warnings.filterwarnings('ignore')
@@ -184,18 +186,104 @@ def _to_records(df: pd.DataFrame):
     return clean.to_dict(orient='records')
 
 
-def _to_firebase_payload(df: pd.DataFrame):
+FIREBASE_TABLE_VERSION = 'table_v2'
+FIREBASE_MAX_ROWS = 100_000
+FIREBASE_MAX_COLUMNS = 200
+
+
+def _schema_hash(df: pd.DataFrame) -> str:
+    schema = [(str(c), str(t)) for c, t in df.dtypes.items()]
+    encoded = json.dumps(schema, ensure_ascii=False, separators=(',', ':'))
+    return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
+def _validate_dataframe_for_firebase(df: pd.DataFrame):
+    row_count, column_count = df.shape
+
+    if row_count > 25_000:
+        warnings.warn(
+            'Dataset grande para Realtime DB. Si el crecimiento continúa, evalúa mover datasets '
+            'analíticos a Cloud Storage / BigQuery para mejor escalabilidad.'
+        )
+
+    if row_count > FIREBASE_MAX_ROWS:
+        raise ValueError(
+            f'Dataset demasiado grande para Realtime DB: {row_count} filas '
+            f'(máximo permitido: {FIREBASE_MAX_ROWS}).'
+        )
+    if column_count > FIREBASE_MAX_COLUMNS:
+        raise ValueError(
+            f'Dataset demasiado ancho para Realtime DB: {column_count} columnas '
+            f'(máximo permitido: {FIREBASE_MAX_COLUMNS}).'
+        )
+
+
+def _validate_firebase_payload_shape(payload: dict):
+    if not isinstance(payload, dict):
+        raise ValueError('El payload de Firebase debe ser un objeto JSON.')
+
+    required_meta = ['version', 'row_count', 'updated_at', 'schema_hash']
+    meta = payload.get('metadata')
+    if not isinstance(meta, dict):
+        raise ValueError('El payload debe incluir metadata válida.')
+
+    missing = [field for field in required_meta if field not in meta]
+    if missing:
+        raise ValueError(f'Faltan campos de metadata en payload: {", ".join(missing)}.')
+
+    columns = payload.get('columns')
+    if not isinstance(columns, list):
+        raise ValueError('El payload debe incluir "columns" como lista.')
+
+    has_rows = isinstance(payload.get('rows'), list)
+    chunks = payload.get('chunks')
+    has_chunks = isinstance(chunks, list)
+    if has_rows == has_chunks:
+        raise ValueError('El payload debe incluir exactamente uno de: "rows" o "chunks".')
+
+    if has_chunks:
+        for idx, chunk in enumerate(chunks):
+            if not isinstance(chunk, dict) or not isinstance(chunk.get('rows'), list):
+                raise ValueError(f'Chunk inválido en índice {idx}: se esperaba objeto con lista "rows".')
+
+
+def _metadata_from_df(df: pd.DataFrame) -> dict:
+    return {
+        'version': FIREBASE_TABLE_VERSION,
+        'row_count': int(df.shape[0]),
+        'column_count': int(df.shape[1]),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+        'schema_hash': _schema_hash(df),
+    }
+
+
+def _to_firebase_payload(df: pd.DataFrame, chunk_size: int | None = None):
     """Serializa DataFrames evitando usar nombres de columna como claves JSON.
 
     Firebase Realtime Database no permite ciertos caracteres en claves
     (., #, $, [, ], /). Varias columnas del Excel los incluyen.
     """
+    _validate_dataframe_for_firebase(df)
     clean = df.copy().replace({np.nan: None})
-    return {
-        '__format__': 'table_v1',
+    payload = {
+        '__format__': FIREBASE_TABLE_VERSION,
         'columns': [str(c) for c in clean.columns],
-        'rows': clean.values.tolist(),
+        'metadata': _metadata_from_df(clean),
     }
+
+    rows = clean.values.tolist()
+    if chunk_size:
+        if chunk_size <= 0:
+            raise ValueError('chunk_size debe ser un entero positivo.')
+        payload['chunks'] = [
+            {'index': idx, 'rows': rows[idx:idx + chunk_size]}
+            for idx in range(0, len(rows), chunk_size)
+        ]
+    else:
+        payload['rows'] = rows
+
+    _validate_firebase_payload_shape(payload)
+    return payload
 
 
 def _to_plain_dict(value):
@@ -326,9 +414,11 @@ def init_firebase():
         return False, f'Error Firebase: {e}'
 
 
-def save_df_to_firebase(path: str, df: pd.DataFrame):
+def save_df_to_firebase(path: str, df: pd.DataFrame, chunk_size: int | None = None):
     ref = db.reference(path)
-    ref.set(_to_firebase_payload(df))
+    payload = _to_firebase_payload(df, chunk_size=chunk_size)
+    _validate_firebase_payload_shape(payload)
+    ref.set(payload)
 
 
 def load_df_from_firebase(path: str) -> pd.DataFrame:
@@ -360,10 +450,30 @@ def load_df_from_firebase(path: str) -> pd.DataFrame:
     if not raw:
         return pd.DataFrame()
 
-    # Nuevo formato robusto frente a claves inválidas en Firebase.
-    if isinstance(raw, dict) and raw.get('__format__') == 'table_v1':
+    # Formatos tabulares versionados y robustos frente a claves inválidas en Firebase.
+    if isinstance(raw, dict) and raw.get('__format__') in ('table_v1', FIREBASE_TABLE_VERSION):
         cols = raw.get('columns') or []
-        rows = _coerce_rows(raw.get('rows') or [])
+
+        rows_source = raw.get('rows')
+        chunks = raw.get('chunks')
+        if isinstance(chunks, list):
+            rows_source = []
+            for chunk in chunks:
+                if isinstance(chunk, dict):
+                    rows_source.extend(chunk.get('rows') or [])
+
+        rows = _coerce_rows(rows_source or [])
+
+        # Validación defensiva (soporta formatos legacy sin bloquear la lectura).
+        if not isinstance(cols, list):
+            cols = []
+        if isinstance(raw.get('metadata'), dict):
+            expected_rows = raw['metadata'].get('row_count')
+            if isinstance(expected_rows, int) and expected_rows != len(rows):
+                st.warning(
+                    f'El dataset {path} tiene metadata inconsistente: '
+                    f'row_count={expected_rows}, filas_leídas={len(rows)}.'
+                )
 
         if cols:
             normalized_dict_rows = []
