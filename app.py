@@ -884,9 +884,51 @@ df_budget_raw   = data['budget_raw']
 MONTHS_ES = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',
              7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
 
+
+def period_label(month_num: int, year: int | None) -> str:
+    m = MONTHS_ES.get(month_num, str(month_num))
+    return f"{m} {year}" if year else m
+
+
+def infer_reporting_year(df_ventas_data: pd.DataFrame) -> int | None:
+    year_candidates = ['Año', 'Anio', 'Year', 'Ejercicio', 'Año Factura', 'Anio Factura']
+    for col in year_candidates:
+        if col in df_ventas_data.columns:
+            years = pd.to_numeric(df_ventas_data[col], errors='coerce').dropna()
+            years = years[(years >= 2000) & (years <= 2100)]
+            if not years.empty:
+                return int(years.mode().iloc[0])
+
+    date_candidates = ['Fecha', 'Fecha Factura', 'Fecha Documento', 'Date']
+    for col in date_candidates:
+        if col in df_ventas_data.columns:
+            parsed = pd.to_datetime(df_ventas_data[col], errors='coerce', dayfirst=True)
+            parsed = parsed.dropna()
+            if not parsed.empty:
+                return int(parsed.dt.year.mode().iloc[0])
+
+    configured_year = st.secrets.get('reporting_year')
+    if configured_year is not None:
+        configured_year = pd.to_numeric(pd.Series([configured_year]), errors='coerce').iloc[0]
+        if pd.notna(configured_year):
+            return int(configured_year)
+
+    return None
+
+
+def contextual_label(prefix: str, month_num: int | None, year: int | None, neutral: str = 'Periodo seleccionado') -> str:
+    if month_num:
+        return f"{prefix} {period_label(month_num, year)}"
+    if year:
+        return f"{prefix} {year}"
+    return f"{prefix} {neutral}"
+
 avail_months = sorted(brand_monthly['Mes Factura'].unique())
 current_month = avail_months[-1] if avail_months else 1
 current_month_name = MONTHS_ES.get(current_month, str(current_month))
+reporting_year = infer_reporting_year(df_ventas)
+overview_period = period_label(current_month, reporting_year)
+period_suffix = str(reporting_year) if reporting_year else 'Año actual'
 
 total_rev   = df_ventas_full['Importe Neto'].sum()
 total_mg_eur= df_ventas_full['Margen_Euros'].sum()
@@ -904,7 +946,7 @@ if page == "📊 Overview · RECAP":
     st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
         <h1 style="margin:0;font-size:32px;">RECAP</h1>
-        <span style="color:#5a6378;font-size:14px;">Resumen Global · {safe_current_month_name} 2026</span>
+        <span style="color:#5a6378;font-size:14px;">Resumen Global · {overview_period if reporting_year else 'Periodo seleccionado'}</span>
     </div>""", unsafe_allow_html=True)
 
     # ── KPI row ──
@@ -918,7 +960,7 @@ if page == "📊 Overview · RECAP":
     budget_rev= float(budget_tot[0]) if len(budget_tot) > 0 else 0
 
     with c1:
-        st.metric("Revenue Enero", fmt_eur(total_rev),
+        st.metric(contextual_label("Revenue", current_month, reporting_year), fmt_eur(total_rev),
                   f"{(total_rev/ly_rev*12 - 1)*100:+.1f}% vs LY (anualiz.)" if ly_rev else "—")
     with c2:
         st.metric("Margen €", fmt_eur(total_mg_eur),
@@ -1016,7 +1058,7 @@ if page == "📊 Overview · RECAP":
         st.plotly_chart(fig2, width='stretch')
 
     # ── Budget evolution ──
-    st.markdown('<div class="section-header">Budget Mensual 2026 — Distribución</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Budget Mensual {period_suffix} — Distribución</div>', unsafe_allow_html=True)
     months_list = list(MONTHS_ES.values())
     budget_vals = [budget_monthly.get(m, 0) for m in range(1, 13)]
     cum_budget  = np.cumsum(budget_vals)
@@ -1053,7 +1095,7 @@ if page == "📊 Overview · RECAP":
     st.plotly_chart(fig3, width='stretch')
 
     # ── Top brands table ──
-    st.markdown('<div class="section-header">Top Marcas · Enero 2026</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Top Marcas · {overview_period if reporting_year else "Periodo seleccionado"}</div>', unsafe_allow_html=True)
     top_brands = brand_monthly[brand_monthly['Mes Factura']==current_month].copy()
     top_brands = top_brands[top_brands['Nombre'].notna() & (top_brands['Nombre'] != '0 - SIN CLASIFICAR')]
     top_brands = top_brands.sort_values('Revenue', ascending=False).head(15)
@@ -1095,10 +1137,10 @@ if page == "📊 Overview · RECAP":
 # ════════════════════════════════════════════════════════════════════════════════
 elif page == "📈 MARGINS · Marcas":
 
-    st.markdown("""
+    st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
         <h1 style="margin:0;font-size:32px;">MARGINS</h1>
-        <span style="color:#5a6378;font-size:14px;">Detalle por Marca · Datos 2026</span>
+        <span style="color:#5a6378;font-size:14px;">Detalle por Marca · Datos {period_suffix if reporting_year else 'Año actual'}</span>
     </div>""", unsafe_allow_html=True)
 
     # Filter controls
@@ -1146,7 +1188,7 @@ elif page == "📈 MARGINS · Marcas":
             hover_name='Marca',
             hover_data={'LY_Rev':':.0f','Budget_Rev':':.0f','Stock':':.0f','Vertical':False},
             size_max=40,
-            labels={'LY_Rev':'Revenue LY (€)','Budget_Rev':'Budget 2026 (€)'},
+            labels={'LY_Rev':'Revenue LY (€)','Budget_Rev':f'Budget {period_suffix} (€)'},
         )
         # Diagonal reference line
         max_val = max(scatter_df['LY_Rev'].max(), scatter_df['Budget_Rev'].max())
@@ -1256,8 +1298,8 @@ else:
     safe_v_label = escape(V_LABEL)
     st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
-        <h1 style="margin:0;font-size:32px;color:{V_COLOR};">{V_ICON} {safe_v_label}</h1>
-        <span style="color:#5a6378;font-size:14px;">Vertical Dashboard · {safe_current_month_name} 2026</span>
+        <h1 style="margin:0;font-size:32px;color:{V_COLOR};">{V_ICON} {V_LABEL}</h1>
+        <span style="color:#5a6378;font-size:14px;">Vertical Dashboard · {overview_period if reporting_year else 'Periodo seleccionado'}</span>
     </div>""", unsafe_allow_html=True)
 
     # Filter data for this vertical
@@ -1295,7 +1337,7 @@ else:
     # ── KPI row ──
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.metric("Revenue Enero", fmt_eur(rev_v),
+        st.metric(contextual_label("Revenue", current_month, reporting_year), fmt_eur(rev_v),
                   f"Budget: {fmt_eur(bud_monthly_v)}")
     with k2:
         cumpl_v = rev_v / bud_monthly_v if bud_monthly_v else 0
@@ -1367,7 +1409,7 @@ else:
             marker_line_color='#3d4b63', marker_line_width=1,
         ))
         fig_bv.add_trace(go.Bar(
-            name='Revenue Enero',
+            name=contextual_label('Revenue', current_month, reporting_year),
             x=merged_v['Nombre'],
             y=merged_v['Revenue'],
             marker_color=V_COLOR,
@@ -1410,7 +1452,7 @@ else:
         st.plotly_chart(fig_mgb, width='stretch')
 
     # ── Budget monthly distribution ──
-    st.markdown('<div class="section-header">Distribución Budget Mensual 2026</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Distribución Budget Mensual {period_suffix}</div>', unsafe_allow_html=True)
 
     # Get budget by month for this vertical from budget table
     vert_brand_list = brands_v['Marca'].tolist()
