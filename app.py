@@ -406,6 +406,20 @@ def read_sheet(uploaded_file, sheet_name):
     return pd.read_excel(bio, sheet_name=0)
 
 
+def safe_rename_first_cols(df, mapping_by_pos):
+    cols = list(df.columns)
+    rename = {}
+    for pos, target in mapping_by_pos.items():
+        if pos < len(cols) and target not in df.columns:
+            rename[cols[pos]] = target
+    return df.rename(columns=rename)
+
+
+def _warn_data_issue(message):
+    warnings.warn(message)
+    st.warning(message)
+
+
 def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     base = df_estado.copy() if not df_estado.empty else pd.DataFrame(columns=['Marca', 'Vertical'])
     if 'Marca' not in base.columns:
@@ -424,10 +438,16 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     if not df_stock.empty:
         stock = df_stock.copy()
         stock.columns = [str(c).strip() for c in stock.columns]
-        if 'Marca' not in stock.columns:
-            stock.rename(columns={stock.columns[0]: 'Marca'}, inplace=True)
-        if 'Stock' not in stock.columns:
-            stock.rename(columns={stock.columns[1]: 'Stock'}, inplace=True)
+        stock = safe_rename_first_cols(stock, {0: 'Marca', 1: 'Stock'})
+        missing_stock_cols = [c for c in ['Marca', 'Stock'] if c not in stock.columns]
+        if missing_stock_cols:
+            _warn_data_issue(
+                f"Stock sheet missing required columns {missing_stock_cols}; defaulting missing values to 0."
+            )
+            if 'Marca' not in stock.columns:
+                stock['Marca'] = ''
+            if 'Stock' not in stock.columns:
+                stock['Stock'] = 0
         stock['BrandKey'] = stock['Marca'].apply(_normalize_brand)
         stock = stock.groupby('BrandKey', as_index=False)['Stock'].sum()
         base = base.merge(stock, on='BrandKey', how='left')
@@ -437,8 +457,10 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     if not df_margin_ly.empty:
         ly = df_margin_ly.copy()
         ly.columns = [str(c).strip() for c in ly.columns]
+        ly = safe_rename_first_cols(ly, {0: 'Marca'})
         if 'Marca' not in ly.columns:
-            ly.rename(columns={ly.columns[0]: 'Marca'}, inplace=True)
+            _warn_data_issue("LY sheet missing required column ['Marca']; defaulting LY metrics to 0.")
+            ly['Marca'] = ''
         rename_map = {}
         for col in ly.columns:
             n = _normalize_col(col)
@@ -459,8 +481,10 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     if not df_budget.empty:
         budget = df_budget.copy()
         budget.columns = [str(c).strip() for c in budget.columns]
+        budget = safe_rename_first_cols(budget, {0: 'Marca'})
         if 'Marca' not in budget.columns:
-            budget.rename(columns={budget.columns[0]: 'Marca'}, inplace=True)
+            _warn_data_issue("Budget sheet missing required column ['Marca']; defaulting budget metrics to 0.")
+            budget['Marca'] = ''
 
         month_cols = [
             c for c in [
