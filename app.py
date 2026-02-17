@@ -491,7 +491,8 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
             budget['Budget_MgEur'] = pd.to_numeric(budget[mg_eur_col], errors='coerce').fillna(0)
 
         if 'Budget_MgEur' not in budget.columns:
-            budget['Budget_MgEur'] = budget['Budget_Rev'] * pd.to_numeric(budget.get('Budget_Mg%', 0), errors='coerce').fillna(0)
+            budget_mg_pct = budget['Budget_Mg%'] if 'Budget_Mg%' in budget.columns else pd.Series(0, index=budget.index)
+            budget['Budget_MgEur'] = budget['Budget_Rev'] * pd.to_numeric(budget_mg_pct, errors='coerce').fillna(0)
         if 'Budget_Mg%' not in budget.columns:
             budget['Budget_Mg%'] = np.where(
                 budget['Budget_Rev'] != 0,
