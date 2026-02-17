@@ -540,6 +540,9 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     for c in ['Stock', 'Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
         base[c] = pd.to_numeric(base[c], errors='coerce').fillna(0)
 
+    agg_names = {'TOTAL', '2 WHEELS', 'FREE TIME', 'OUTDOOR TECH', 'VARIOS'}
+    base = base[~base['BrandKey'].isin({_normalize_brand(v) for v in agg_names})].copy()
+
     base = base.drop(columns=['BrandKey'], errors='ignore')
 
     aggs = []
@@ -571,7 +574,8 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
         'LY_Mg%': (base['LY_MgEur'].sum() / base['LY_Rev'].sum()) if base['LY_Rev'].sum() else 0,
     }
 
-    return pd.concat([base, pd.DataFrame(aggs + [total])], ignore_index=True)
+    summary_rows = pd.DataFrame(aggs + [total])
+    return base, summary_rows
 
 
 def load_data_from_firebase():
@@ -638,14 +642,15 @@ def load_data_from_firebase():
     for m, col in month_budget_cols.items():
         budget_monthly[m] = pd.to_numeric(df_budget_raw[col], errors='coerce').fillna(0).sum() if col in df_budget_raw.columns else 0
 
-    df_margins = build_margins_table(df_estado, df_stock, df_margin_ly, df_budget_raw)
+    df_margins_detail, df_margins_summary = build_margins_table(df_estado, df_stock, df_margin_ly, df_budget_raw)
 
     return {
         'ventas': df_ventas,
         'ventas_full': df_ventas_full,
         'familias': df_familias,
         'budget_raw': df_budget_raw,
-        'margins': df_margins,
+        'margins_detail': df_margins_detail,
+        'margins_summary': df_margins_summary,
         'brand_monthly': brand_monthly,
         'vertical_monthly': vertical_monthly,
         'budget_monthly': budget_monthly,
@@ -814,7 +819,8 @@ if data is None:
     """, unsafe_allow_html=True)
     st.stop()
 
-df_margins      = data['margins']
+df_margins      = data['margins_detail']
+df_margins_sum  = data['margins_summary']
 brand_monthly   = data['brand_monthly']
 vert_monthly    = data['vertical_monthly']
 budget_monthly  = data['budget_monthly']
@@ -893,12 +899,12 @@ if page == "📊 Overview · RECAP":
 
     # ── KPI row ──
     c1, c2, c3, c4, c5 = st.columns(5)
-    ly_total = df_margins.loc[df_margins['Marca']=='TOTAL','LY_Rev'].values
+    ly_total = df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'LY_Rev'].values
     ly_rev   = ly_total[0] if len(ly_total) > 0 else 0
-    ly_mg    = df_margins.loc[df_margins['Marca']=='TOTAL','LY_MgEur'].values
+    ly_mg    = df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'LY_MgEur'].values
     ly_mg_eur= ly_mg[0] if len(ly_mg) > 0 else 0
     ly_mg_pct= ly_mg_eur / ly_rev if ly_rev else 0
-    budget_tot= df_margins.loc[df_margins['Marca']=='TOTAL','Budget_Rev'].values
+    budget_tot= df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'Budget_Rev'].values
     budget_rev= float(budget_tot[0]) if len(budget_tot) > 0 else 0
 
     with c1:
@@ -909,7 +915,7 @@ if page == "📊 Overview · RECAP":
                   f"{(total_mg_pct - ly_mg_pct)*100:+.1f}pp vs LY" if ly_rev else "—")
     with c3:
         st.metric("Margen %", fmt_pct(total_mg_pct),
-                  f"Budget: {fmt_pct(df_margins.loc[df_margins['Marca']=='TOTAL','Budget_Mg%'].values[0] if len(df_margins.loc[df_margins['Marca']=='TOTAL']) else 0)}")
+                  f"Budget: {fmt_pct(df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'Budget_Mg%'].values[0] if len(df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL']) else 0)}")
     with c4:
         st.metric("Stock", fmt_eur(total_stock))
     with c5:
@@ -932,7 +938,7 @@ if page == "📊 Overview · RECAP":
         verticals_summary['Margen_Pct'] = verticals_summary['Margen_Euros'] / verticals_summary['Revenue']
 
         # Add budget per vertical using margins data
-        v_budget = df_margins[df_margins['Marca'].isin(['2 WHEELS','FREE TIME','OUTDOOR TECH'])][['Marca','Budget_Rev']].copy()
+        v_budget = df_margins_sum[df_margins_sum['Marca'].isin(['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH'])][['Marca', 'Budget_Rev']].copy()
         v_budget.columns = ['Columna1','Budget']
         v_budget['Columna1'] = v_budget['Columna1'].str.upper().str.strip()
         verticals_summary['Columna1_upper'] = verticals_summary['Columna1'].str.upper().str.strip()
@@ -1098,8 +1104,7 @@ elif page == "📈 MARGINS · Marcas":
 
     df_fil = df_margins[
         df_margins['Vertical'].isin(vertical_filter) &
-        ~df_margins['Marca'].isin(['TOTAL','2 WHEELS','FREE TIME','OUTDOOR TECH','VARIOS',
-                                    'SIN CLASIFICAR','NUEVAS MARCAS','0 - SIN CLASIFICAR','—'])
+        ~df_margins['Marca'].isin(['SIN CLASIFICAR', 'NUEVAS MARCAS', '0 - SIN CLASIFICAR', '—'])
     ].copy()
 
     sort_map = {"Budget Revenue":"Budget_Rev","Stock":"Stock","LY Revenue":"LY_Rev","Margen% Budget":"Budget_Mg%"}
@@ -1266,7 +1271,7 @@ else:
     mgpct_v= mg_v / rev_v if rev_v else 0
 
     # Budget for this vertical
-    v_row = df_margins[df_margins['Marca'].str.upper()==V_KEY]
+    v_row = df_margins_sum[df_margins_sum['Marca'].str.upper() == V_KEY]
     budget_v     = float(v_row['Budget_Rev'].iloc[0]) if len(v_row) else 0
     budget_mg_v  = float(v_row['Budget_Mg%'].iloc[0]) if len(v_row) else 0
     stock_v      = float(v_row['Stock'].iloc[0]) if len(v_row) else 0
