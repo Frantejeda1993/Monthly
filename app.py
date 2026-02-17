@@ -5,6 +5,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import numpy as np
 from io import BytesIO
+from urllib.parse import urlparse
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -169,6 +170,33 @@ def _to_plain_dict(value):
     return value
 
 
+def _normalize_database_url(value):
+    if not isinstance(value, str):
+        return None
+
+    candidate = value.strip().strip('"').strip("'")
+    if not candidate:
+        return None
+
+    # Error común: URL duplicada (https://https://...)
+    duplicate_prefix = 'https://https://'
+    if candidate.startswith(duplicate_prefix):
+        candidate = 'https://' + candidate[len(duplicate_prefix):]
+
+    if not candidate.startswith(('http://', 'https://')):
+        candidate = f'https://{candidate}'
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        return None
+
+    # Evita URLs inválidas como "https" o "https://https" (host='https').
+    if parsed.netloc.lower() == 'https':
+        return None
+
+    return f'{parsed.scheme}://{parsed.netloc}'
+
+
 def _extract_firebase_config():
     secrets = _to_plain_dict(st.secrets)
     firebase_section = secrets.get('firebase', {}) if isinstance(secrets, dict) else {}
@@ -185,6 +213,7 @@ def _extract_firebase_config():
         or merged.get('firebase_database_url')
         or merged.get('FIREBASE_DATABASE_URL')
     )
+    db_url = _normalize_database_url(db_url)
 
     sa = merged.get('service_account') or merged.get('firebase_service_account')
     if isinstance(sa, str):
@@ -213,6 +242,12 @@ def init_firebase():
     try:
         if not firebase_admin._apps:
             cred_info, database_url, merged = _extract_firebase_config()
+            raw_database_url = (
+                merged.get('databaseURL')
+                or merged.get('database_url')
+                or merged.get('firebase_database_url')
+                or merged.get('FIREBASE_DATABASE_URL')
+            )
             missing = []
             if not database_url:
                 missing.append('databaseURL')
@@ -222,10 +257,17 @@ def init_firebase():
 
             if missing:
                 available = ', '.join(sorted([str(k) for k in merged.keys()])) if isinstance(merged, dict) else 'sin claves'
+                db_hint = ''
+                if raw_database_url:
+                    db_hint = (
+                        f' Valor recibido para databaseURL: {raw_database_url!r}. '
+                        'Debe ser una URL válida, por ejemplo: '
+                        'https://TU-PROYECTO-default-rtdb.europe-west1.firebasedatabase.app'
+                    )
                 return False, (
                     'Faltan credenciales de Firebase en st.secrets. '
                     f'Campos faltantes: {", ".join(missing)}. '
-                    f'Claves detectadas: {available}'
+                    f'Claves detectadas: {available}.{db_hint}'
                 )
 
             cred = credentials.Certificate(cred_info)
