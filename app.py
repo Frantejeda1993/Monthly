@@ -240,38 +240,51 @@ def _extract_firebase_config():
 @st.cache_resource
 def init_firebase():
     try:
-        if not firebase_admin._apps:
-            cred_info, database_url, merged = _extract_firebase_config()
-            raw_database_url = (
-                merged.get('databaseURL')
-                or merged.get('database_url')
-                or merged.get('firebase_database_url')
-                or merged.get('FIREBASE_DATABASE_URL')
+        cred_info, database_url, merged = _extract_firebase_config()
+        raw_database_url = (
+            merged.get('databaseURL')
+            or merged.get('database_url')
+            or merged.get('firebase_database_url')
+            or merged.get('FIREBASE_DATABASE_URL')
+        )
+
+        if firebase_admin._apps:
+            app = firebase_admin.get_app()
+            existing_url = _normalize_database_url(
+                app.options.get('databaseURL') or app.options.get('database_url')
             )
-            missing = []
-            if not database_url:
-                missing.append('databaseURL')
-            required_sa_keys = ['project_id', 'private_key', 'client_email']
-            if not all(cred_info.get(k) for k in required_sa_keys):
-                missing.append('service_account')
 
-            if missing:
-                available = ', '.join(sorted([str(k) for k in merged.keys()])) if isinstance(merged, dict) else 'sin claves'
-                db_hint = ''
-                if raw_database_url:
-                    db_hint = (
-                        f' Valor recibido para databaseURL: {raw_database_url!r}. '
-                        'Debe ser una URL válida, por ejemplo: '
-                        'https://TU-PROYECTO-default-rtdb.europe-west1.firebasedatabase.app'
-                    )
-                return False, (
-                    'Faltan credenciales de Firebase en st.secrets. '
-                    f'Campos faltantes: {", ".join(missing)}. '
-                    f'Claves detectadas: {available}.{db_hint}'
+            # Si el app cargado está corrupto (ej. host='https') o desincronizado,
+            # lo recreamos usando la config actual de st.secrets.
+            if (not existing_url) or (database_url and existing_url != database_url):
+                firebase_admin.delete_app(app)
+            else:
+                return True, 'Firebase conectado.'
+
+        missing = []
+        if not database_url:
+            missing.append('databaseURL')
+        required_sa_keys = ['project_id', 'private_key', 'client_email']
+        if not all(cred_info.get(k) for k in required_sa_keys):
+            missing.append('service_account')
+
+        if missing:
+            available = ', '.join(sorted([str(k) for k in merged.keys()])) if isinstance(merged, dict) else 'sin claves'
+            db_hint = ''
+            if raw_database_url:
+                db_hint = (
+                    f' Valor recibido para databaseURL: {raw_database_url!r}. '
+                    'Debe ser una URL válida, por ejemplo: '
+                    'https://TU-PROYECTO-default-rtdb.europe-west1.firebasedatabase.app'
                 )
+            return False, (
+                'Faltan credenciales de Firebase en st.secrets. '
+                f'Campos faltantes: {", ".join(missing)}. '
+                f'Claves detectadas: {available}.{db_hint}'
+            )
 
-            cred = credentials.Certificate(cred_info)
-            firebase_admin.initialize_app(cred, {'databaseURL': database_url})
+        cred = credentials.Certificate(cred_info)
+        firebase_admin.initialize_app(cred, {'databaseURL': database_url})
         return True, 'Firebase conectado.'
     except Exception as e:
         return False, f'Error Firebase: {e}'
