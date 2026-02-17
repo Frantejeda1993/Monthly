@@ -253,6 +253,23 @@ def validate_brand_config_csv(df_csv: pd.DataFrame, expected_brand_keys: set[str
     return cfg
 
 
+def validate_brand_config_df(df_cfg: pd.DataFrame, expected_brand_keys: set[str], immutable_brand_map: dict[str, str] | None = None):
+    cfg = validate_brand_config_csv(df_cfg, expected_brand_keys)
+
+    if immutable_brand_map is not None:
+        cfg_brand_map = cfg.set_index("BrandKey")["Brand"].astype(str).to_dict()
+        changed = [
+            key for key, original_brand in immutable_brand_map.items()
+            if key in cfg_brand_map and cfg_brand_map[key] != original_brand
+        ]
+        if changed:
+            raise ValueError(
+                "Campos de identidad inmutables modificados: 'Brand' no se puede editar manualmente."
+            )
+
+    return cfg
+
+
 def build_brand_config(master_df: pd.DataFrame, saved_cfg: pd.DataFrame) -> pd.DataFrame:
     cfg = master_df.copy()
     cfg["Short Name"] = cfg["Brand"].apply(_auto_short_name)
@@ -398,27 +415,38 @@ if section == "Brand Config":
     if csv_up is not None:
         try:
             incoming = pd.read_csv(csv_up)
-            valid_cfg = validate_brand_config_csv(incoming, set(brand_cfg["BrandKey"]))
+            valid_cfg = validate_brand_config_df(incoming, set(brand_cfg["BrandKey"]))
             save_df_to_firebase("datasets/brand_configuration", valid_cfg)
             st.success("CSV validado y guardado.")
             st.rerun()
         except Exception as e:
             st.error(str(e))
 
+    immutable_brand_map = brand_cfg.set_index("BrandKey")["Brand"].astype(str).to_dict()
+
     edited = st.data_editor(
         brand_cfg[["Brand", "Short Name", "Status", "Family", "Annual Budget", "Expected Margin %", *MONTH_BUDGET_COLS]],
         use_container_width=True,
         num_rows="fixed",
         column_config={
+            "Brand": st.column_config.TextColumn(disabled=True),
             "Status": st.column_config.SelectboxColumn(options=STATUS_OPTIONS),
             "Family": st.column_config.SelectboxColumn(options=FAMILY_OPTIONS),
         },
     )
     if st.button("Guardar configuración", use_container_width=True):
-        out = edited.copy()
-        out["BrandKey"] = out["Brand"].apply(_normalize_brand)
-        save_df_to_firebase("datasets/brand_configuration", out)
-        st.success("Configuración guardada")
+        try:
+            out = edited.copy()
+            out["BrandKey"] = out["Brand"].apply(_normalize_brand)
+            valid_cfg = validate_brand_config_df(
+                out,
+                set(brand_cfg["BrandKey"]),
+                immutable_brand_map=immutable_brand_map,
+            )
+            save_df_to_firebase("datasets/brand_configuration", valid_cfg)
+            st.success("Configuración guardada")
+        except Exception as e:
+            st.error(str(e))
 
     st.stop()
 
