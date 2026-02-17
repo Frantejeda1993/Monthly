@@ -375,6 +375,12 @@ brand_cfg = build_brand_config(brand_master, saved_brand_cfg)
 
 st.sidebar.markdown("---")
 available_months = sorted(sales_df["Mes Factura"].dropna().astype(int).unique().tolist())
+if not available_months:
+    st.warning(
+        "El dataset de ventas no tiene meses válidos (1-12) después de la validación. "
+        "Revisa y vuelve a subir el archivo con valores correctos en `Mes Factura` o `Fecha`."
+    )
+    st.stop()
 current_month = st.sidebar.selectbox("Current Month", options=available_months, index=len(available_months) - 1)
 section = st.sidebar.radio("Section", ["Brand Config", "Overview", "Margin", "Vertical · 2 WHEELS", "Vertical · FREE TIME", "Vertical · OUTDOOR TECH"])
 
