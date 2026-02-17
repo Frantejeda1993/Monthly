@@ -406,6 +406,88 @@ def read_sheet(uploaded_file, sheet_name):
     return pd.read_excel(bio, sheet_name=0)
 
 
+DATASET_VALIDATION_RULES = {
+    'ventas': {
+        'required': ['Clave 1', 'Mes Factura', 'Importe Neto'],
+        'numeric': ['Importe Neto', 'Margen_Euros', 'CR3: % Margen s/Venta'],
+        'month_col': 'Mes Factura',
+    },
+    'familias': {
+        'required': ['Nombre', 'Familia', 'Columna1'],
+        'numeric': [],
+    },
+    'budget': {
+        'required': ['Marca'],
+        'numeric': [
+            'Venta Enero', 'Venta Febrero', 'Venta Marzo', 'Venta Abril', 'Venta Mayo', 'Venta Junio',
+            'Venta Julio', 'Venta Agosto', 'Venta Septiembre', 'Venta Octubre', 'Venta Noviembre', 'Venta Diciembre',
+            'Budget_Rev', 'Budget_Mg%', 'Budget_MgEur'
+        ],
+    },
+    'stock': {
+        'required': ['Marca'],
+        'numeric': ['Stock'],
+    },
+    'margin_ly': {
+        'required': ['Marca'],
+        'numeric': ['LY_Rev', 'LY_MgEur', 'LY_Mg%'],
+    },
+    'estado_marcas': {
+        'required': ['Marca', 'Vertical'],
+        'numeric': [],
+    },
+}
+
+
+def require_columns(df, required, dataset_name):
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"{dataset_name}: faltan columnas {missing}")
+
+
+def coerce_numeric_fields(df, numeric_fields, dataset_name):
+    invalid_columns = []
+    for col in numeric_fields:
+        if col not in df.columns:
+            continue
+        coerced = pd.to_numeric(df[col], errors='coerce')
+        invalid_mask = df[col].notna() & coerced.isna()
+        if invalid_mask.any():
+            invalid_columns.append(col)
+        df[col] = coerced
+
+    if invalid_columns:
+        raise ValueError(f"{dataset_name}: valores no numéricos en columnas {invalid_columns}")
+
+
+def validate_month_range(df, month_col, dataset_name):
+    if month_col not in df.columns:
+        return
+
+    month_numeric = pd.to_numeric(df[month_col], errors='coerce')
+    invalid_mask = df[month_col].notna() & month_numeric.isna()
+    out_of_range_mask = month_numeric.notna() & ~month_numeric.between(1, 12)
+
+    if invalid_mask.any() or out_of_range_mask.any():
+        raise ValueError(f"{dataset_name}: la columna '{month_col}' debe contener meses válidos entre 1 y 12")
+
+    df[month_col] = month_numeric.astype('Int64')
+
+
+def validate_dataset(df, dataset_key, dataset_name):
+    rules = DATASET_VALIDATION_RULES.get(dataset_key, {})
+    require_columns(df, rules.get('required', []), dataset_name)
+
+    if dataset_key == 'ventas' and 'Margen_Euros' not in df.columns and 'CR3: % Margen s/Venta' not in df.columns:
+        raise ValueError(
+            f"{dataset_name}: falta columna de margen. Debe existir 'Margen_Euros' o 'CR3: % Margen s/Venta'"
+        )
+
+    coerce_numeric_fields(df, rules.get('numeric', []), dataset_name)
+    validate_month_range(df, rules.get('month_col'), dataset_name)
+    return df
+
+
 def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     base = df_estado.copy() if not df_estado.empty else pd.DataFrame(columns=['Marca', 'Vertical'])
     if 'Marca' not in base.columns:
@@ -557,6 +639,24 @@ def load_data_from_firebase():
     df_estado = load_df_from_firebase('datasets/anual_estado_marcas')
     df_familias = load_df_from_firebase('datasets/anual_familias')
 
+    datasets_to_validate = [
+        ('ventas', 'INPUT (Mensual) Ventas', df_ventas),
+        ('stock', 'INPUT (Mensual) Stock', df_stock),
+        ('margin_ly', 'INPUT (Anual) MARGIN LY', df_margin_ly),
+        ('budget', 'INPUT (Anual) Budget', df_budget_raw),
+        ('estado_marcas', 'INPUT (Anual) Estado Marcas', df_estado),
+        ('familias', 'INPUT (Anual) Familias', df_familias),
+    ]
+
+    for dataset_key, dataset_name, df in datasets_to_validate:
+        if df.empty:
+            continue
+        try:
+            validate_dataset(df, dataset_key, dataset_name)
+        except ValueError as e:
+            st.error(str(e))
+            return None
+
     if df_ventas.empty or df_familias.empty:
         return None
 
@@ -680,11 +780,23 @@ with st.sidebar:
     if st.button("Guardar Excel en Firebase", width='stretch', disabled=not firebase_ok):
         try:
             if up_ventas is not None:
-                save_df_to_firebase('datasets/mensual_ventas', read_sheet(up_ventas, 'INPUT (Mensual) Ventas'))
+                ventas_df = read_sheet(up_ventas, 'INPUT (Mensual) Ventas')
+                save_df_to_firebase(
+                    'datasets/mensual_ventas',
+                    validate_dataset(ventas_df, 'ventas', 'INPUT (Mensual) Ventas')
+                )
             if up_stock is not None:
-                save_df_to_firebase('datasets/mensual_stock', read_sheet(up_stock, 'INPUT (Mensual) Stock'))
+                stock_df = read_sheet(up_stock, 'INPUT (Mensual) Stock')
+                save_df_to_firebase(
+                    'datasets/mensual_stock',
+                    validate_dataset(stock_df, 'stock', 'INPUT (Mensual) Stock')
+                )
             if up_margin_ly is not None:
-                save_df_to_firebase('datasets/anual_margin_ly', read_sheet(up_margin_ly, 'INPUT (Anual) MARGIN LY'))
+                margin_ly_df = read_sheet(up_margin_ly, 'INPUT (Anual) MARGIN LY')
+                save_df_to_firebase(
+                    'datasets/anual_margin_ly',
+                    validate_dataset(margin_ly_df, 'margin_ly', 'INPUT (Anual) MARGIN LY')
+                )
             st.success('Datos de Excel guardados correctamente.')
         except Exception as e:
             st.error(f'No se pudo guardar: {e}')
@@ -709,20 +821,23 @@ if page == "⚙️ Configuración de Datos":
 
     tabs = st.tabs(["INPUT (Anual) Budget", "INPUT (Anual) Estado Marcas", "INPUT (Anual) Familias"])
     table_map = [
-        ('datasets/anual_budget', 'budget_editor'),
-        ('datasets/anual_estado_marcas', 'estado_editor'),
-        ('datasets/anual_familias', 'familias_editor'),
+        ('datasets/anual_budget', 'budget_editor', 'budget', 'INPUT (Anual) Budget'),
+        ('datasets/anual_estado_marcas', 'estado_editor', 'estado_marcas', 'INPUT (Anual) Estado Marcas'),
+        ('datasets/anual_familias', 'familias_editor', 'familias', 'INPUT (Anual) Familias'),
     ]
 
-    for tab, (path, key) in zip(tabs, table_map):
+    for tab, (path, key, dataset_key, dataset_name) in zip(tabs, table_map):
         with tab:
             df = load_df_from_firebase(path)
             edited = st.data_editor(df, num_rows='dynamic', width='stretch', key=key)
             c1, c2 = st.columns([1, 3])
             with c1:
                 if st.button("Guardar", key=f"save_{key}", width='stretch'):
-                    save_df_to_firebase(path, edited)
-                    st.success("Guardado en Firebase")
+                    try:
+                        save_df_to_firebase(path, validate_dataset(edited, dataset_key, dataset_name))
+                        st.success("Guardado en Firebase")
+                    except ValueError as e:
+                        st.error(str(e))
             with c2:
                 up = st.file_uploader("Cargar desde Excel (opcional)", type=['xlsx'], key=f"u_{key}")
                 if up is not None and st.button("Importar Excel", key=f"import_{key}"):
@@ -731,9 +846,12 @@ if page == "⚙️ Configuración de Datos":
                         'datasets/anual_estado_marcas': 'INPUT (Anual) Estado Marcas',
                         'datasets/anual_familias': 'INPUT (Anual) Familias',
                     }[path]
-                    new_df = read_sheet(up, name)
-                    save_df_to_firebase(path, new_df)
-                    st.success("Importado y guardado")
+                    try:
+                        new_df = read_sheet(up, name)
+                        save_df_to_firebase(path, validate_dataset(new_df, dataset_key, dataset_name))
+                        st.success("Importado y guardado")
+                    except ValueError as e:
+                        st.error(str(e))
     st.stop()
 
 # ── Load data ───────────────────────────────────────────────────────────────────
