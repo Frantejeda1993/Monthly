@@ -43,3 +43,27 @@ streamlit run app.py
 - `MARGINS` → stock, budget, datos año anterior por marca
 - `INPUT (Anual) Budget` → desglose mensual del budget
 - `INPUT (Anual) Familias` → relación Marca ↔ Código Familia ↔ Vertical
+
+
+## 🔐 Configuración de Firebase en Streamlit Cloud
+
+En **App settings → Secrets**, puedes usar cualquiera de estos formatos:
+
+```toml
+[firebase]
+databaseURL = "https://TU-PROYECTO-default-rtdb.europe-west1.firebasedatabase.app"
+
+[firebase.service_account]
+type = "service_account"
+project_id = "..."
+private_key_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+client_email = "..."
+client_id = "..."
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "..."
+```
+
+También se aceptan claves planas (`database_url`, `firebase_database_url`, `FIREBASE_DATABASE_URL`) y `service_account` como JSON string.

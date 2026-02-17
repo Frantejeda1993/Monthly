@@ -146,138 +146,235 @@ hr { border-color: var(--border); }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Data loading ────────────────────────────────────────────────────────────────
-@st.cache_data
-def load_data(uploaded_file=None):
-    """Load and process all data from the Excel file."""
-    if uploaded_file is not None:
-        file_source = BytesIO(uploaded_file.read())
-    else:
+# ── Data loading + Firebase ───────────────────────────────────────────────────
+import firebase_admin
+from firebase_admin import credentials, db
+
+
+def _normalize_col(col):
+    return str(col).strip().lower().replace(' ', '_')
+
+
+def _to_records(df: pd.DataFrame):
+    clean = df.copy()
+    clean = clean.replace({np.nan: None})
+    return clean.to_dict(orient='records')
+
+
+def _to_plain_dict(value):
+    if isinstance(value, dict):
+        return {k: _to_plain_dict(v) for k, v in value.items()}
+    if hasattr(value, 'items'):
+        return {k: _to_plain_dict(v) for k, v in value.items()}
+    return value
+
+
+def _extract_firebase_config():
+    secrets = _to_plain_dict(st.secrets)
+    firebase_section = secrets.get('firebase', {}) if isinstance(secrets, dict) else {}
+
+    merged = {}
+    if isinstance(secrets, dict):
+        merged.update(secrets)
+    if isinstance(firebase_section, dict):
+        merged.update(firebase_section)
+
+    db_url = (
+        merged.get('databaseURL')
+        or merged.get('database_url')
+        or merged.get('firebase_database_url')
+        or merged.get('FIREBASE_DATABASE_URL')
+    )
+
+    sa = merged.get('service_account') or merged.get('firebase_service_account')
+    if isinstance(sa, str):
+        try:
+            import json
+            sa = json.loads(sa)
+        except Exception:
+            sa = None
+
+    if not isinstance(sa, dict):
+        sa = {
+            k: merged.get(k) for k in [
+                'type', 'project_id', 'private_key_id', 'private_key', 'client_email',
+                'client_id', 'auth_uri', 'token_uri', 'auth_provider_x509_cert_url', 'client_x509_cert_url'
+            ] if merged.get(k) is not None
+        }
+
+    if isinstance(sa, dict) and isinstance(sa.get('private_key'), str):
+        sa['private_key'] = sa['private_key'].replace('\\n', '\n')
+
+    return sa if isinstance(sa, dict) else {}, db_url, merged
+
+
+@st.cache_resource
+def init_firebase():
+    try:
+        if not firebase_admin._apps:
+            cred_info, database_url, merged = _extract_firebase_config()
+            missing = []
+            if not database_url:
+                missing.append('databaseURL')
+            required_sa_keys = ['project_id', 'private_key', 'client_email']
+            if not all(cred_info.get(k) for k in required_sa_keys):
+                missing.append('service_account')
+
+            if missing:
+                available = ', '.join(sorted([str(k) for k in merged.keys()])) if isinstance(merged, dict) else 'sin claves'
+                return False, (
+                    'Faltan credenciales de Firebase en st.secrets. '
+                    f'Campos faltantes: {", ".join(missing)}. '
+                    f'Claves detectadas: {available}'
+                )
+
+            cred = credentials.Certificate(cred_info)
+            firebase_admin.initialize_app(cred, {'databaseURL': database_url})
+        return True, 'Firebase conectado.'
+    except Exception as e:
+        return False, f'Error Firebase: {e}'
+
+
+def save_df_to_firebase(path: str, df: pd.DataFrame):
+    ref = db.reference(path)
+    ref.set(_to_records(df))
+
+
+def load_df_from_firebase(path: str) -> pd.DataFrame:
+    ref = db.reference(path)
+    raw = ref.get()
+    if not raw:
+        return pd.DataFrame()
+    if isinstance(raw, dict):
+        raw = list(raw.values())
+    return pd.DataFrame(raw)
+
+
+def read_sheet(uploaded_file, sheet_name):
+    bio = BytesIO(uploaded_file.read())
+    uploaded_file.seek(0)
+    xls = pd.ExcelFile(bio)
+    if sheet_name in xls.sheet_names:
+        return pd.read_excel(bio, sheet_name=sheet_name)
+    return pd.read_excel(bio, sheet_name=0)
+
+
+def build_margins_table(df_estado, df_stock, df_margin_ly):
+    base = df_estado.copy() if not df_estado.empty else pd.DataFrame(columns=['Marca', 'Vertical'])
+    if 'Marca' not in base.columns:
+        base['Marca'] = ''
+    if 'Vertical' not in base.columns:
+        base['Vertical'] = '—'
+
+    for c in ['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
+        if c not in base.columns:
+            base[c] = 0
+
+    if not df_stock.empty:
+        stock = df_stock.copy()
+        stock.columns = [str(c).strip() for c in stock.columns]
+        if 'Marca' not in stock.columns:
+            stock.rename(columns={stock.columns[0]: 'Marca'}, inplace=True)
+        if 'Stock' not in stock.columns:
+            stock.rename(columns={stock.columns[1]: 'Stock'}, inplace=True)
+        stock = stock.groupby('Marca', as_index=False)['Stock'].sum()
+        base = base.merge(stock, on='Marca', how='left')
+    if 'Stock' not in base.columns:
+        base['Stock'] = 0
+
+    if not df_margin_ly.empty:
+        ly = df_margin_ly.copy()
+        ly.columns = [str(c).strip() for c in ly.columns]
+        if 'Marca' not in ly.columns:
+            ly.rename(columns={ly.columns[0]: 'Marca'}, inplace=True)
+        rename_map = {}
+        for col in ly.columns:
+            n = _normalize_col(col)
+            if 'ly_rev' in n or n in ('revenue_ly', 'ly_revenue'):
+                rename_map[col] = 'LY_Rev'
+            if 'ly_mgeur' in n or 'ly_mg_eur' in n:
+                rename_map[col] = 'LY_MgEur'
+            if 'ly_mg' in n and '%' in col:
+                rename_map[col] = 'LY_Mg%'
+        ly = ly.rename(columns=rename_map)
+        for c in ['LY_Rev', 'LY_MgEur', 'LY_Mg%']:
+            if c not in ly.columns:
+                ly[c] = 0
+        ly = ly[['Marca', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']]
+        base = base.drop(columns=['LY_Rev', 'LY_MgEur', 'LY_Mg%'], errors='ignore').merge(ly, on='Marca', how='left')
+
+    for c in ['Stock', 'Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
+        base[c] = pd.to_numeric(base[c], errors='coerce').fillna(0)
+
+    aggs = []
+    for v in ['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH', 'VARIOS']:
+        sub = base[base['Vertical'].astype(str).str.upper() == v]
+        if len(sub) == 0:
+            continue
+        aggs.append({
+            'Marca': v,
+            'Vertical': v,
+            'Stock': sub['Stock'].sum(),
+            'Budget_Rev': sub['Budget_Rev'].sum(),
+            'Budget_Mg%': (sub['Budget_MgEur'].sum() / sub['Budget_Rev'].sum()) if sub['Budget_Rev'].sum() else 0,
+            'Budget_MgEur': sub['Budget_MgEur'].sum(),
+            'LY_Rev': sub['LY_Rev'].sum(),
+            'LY_MgEur': sub['LY_MgEur'].sum(),
+            'LY_Mg%': (sub['LY_MgEur'].sum() / sub['LY_Rev'].sum()) if sub['LY_Rev'].sum() else 0,
+        })
+
+    total = {
+        'Marca': 'TOTAL',
+        'Vertical': 'TOTAL',
+        'Stock': base['Stock'].sum(),
+        'Budget_Rev': base['Budget_Rev'].sum(),
+        'Budget_Mg%': (base['Budget_MgEur'].sum() / base['Budget_Rev'].sum()) if base['Budget_Rev'].sum() else 0,
+        'Budget_MgEur': base['Budget_MgEur'].sum(),
+        'LY_Rev': base['LY_Rev'].sum(),
+        'LY_MgEur': base['LY_MgEur'].sum(),
+        'LY_Mg%': (base['LY_MgEur'].sum() / base['LY_Rev'].sum()) if base['LY_Rev'].sum() else 0,
+    }
+
+    return pd.concat([base, pd.DataFrame(aggs + [total])], ignore_index=True)
+
+
+def load_data_from_firebase():
+    df_ventas = load_df_from_firebase('datasets/mensual_ventas')
+    df_stock = load_df_from_firebase('datasets/mensual_stock')
+    df_margin_ly = load_df_from_firebase('datasets/anual_margin_ly')
+    df_budget_raw = load_df_from_firebase('datasets/anual_budget')
+    df_estado = load_df_from_firebase('datasets/anual_estado_marcas')
+    df_familias = load_df_from_firebase('datasets/anual_familias')
+
+    if df_ventas.empty or df_familias.empty:
         return None
 
-    from openpyxl import load_workbook
+    if 'Margen_Euros' not in df_ventas.columns and {'Importe Neto', 'CR3: % Margen s/Venta'}.issubset(df_ventas.columns):
+        df_ventas['Margen_Euros'] = df_ventas['Importe Neto'] * df_ventas['CR3: % Margen s/Venta'] / 100
 
-    # ── RAW sheets ──
-    wb_raw  = load_workbook(file_source, data_only=True)
-    file_source.seek(0)
-
-    # --- Ventas ---
-    df_ventas = pd.read_excel(file_source, sheet_name='INPUT (Mensual) Ventas')
-    file_source.seek(0)
-
-    # --- Familias ---
-    df_familias = pd.read_excel(file_source, sheet_name='INPUT (Anual) Familias')
-    file_source.seek(0)
-
-    # --- Budget ---
-    df_budget_raw = pd.read_excel(file_source, sheet_name='INPUT (Anual) Budget')
-    file_source.seek(0)
-
-    # --- Margin LY ---
-    df_margin_ly = pd.read_excel(file_source, sheet_name='INPUT (Anual) MARGIN LY',
-                                  header=[0, 1])
-    file_source.seek(0)
-
-    # ── Compute monthly sales data ──
-    df_ventas['Margen_Euros'] = (
-        df_ventas['Importe Neto'] * df_ventas['CR3: % Margen s/Venta'] / 100
-    )
     df_ventas_full = df_ventas.merge(
         df_familias[['Nombre', 'Familia', 'Columna1']],
         left_on='Clave 1', right_on='Familia', how='left'
     )
 
-    # Per brand monthly
-    brand_monthly = df_ventas_full.groupby(
-        ['Nombre', 'Mes Factura']
-    ).agg(Revenue=('Importe Neto','sum'),
-          Margen_Euros=('Margen_Euros','sum')).reset_index()
+    brand_monthly = df_ventas_full.groupby(['Nombre', 'Mes Factura']).agg(
+        Revenue=('Importe Neto', 'sum'), Margen_Euros=('Margen_Euros', 'sum')
+    ).reset_index()
     brand_monthly['Margen_Pct'] = np.where(
         brand_monthly['Revenue'] != 0,
         brand_monthly['Margen_Euros'] / brand_monthly['Revenue'],
         0
     )
 
-    # Per vertical monthly
-    vertical_monthly = df_ventas_full.groupby(
-        ['Columna1', 'Mes Factura']
-    ).agg(Revenue=('Importe Neto','sum'),
-          Margen_Euros=('Margen_Euros','sum')).reset_index()
+    vertical_monthly = df_ventas_full.groupby(['Columna1', 'Mes Factura']).agg(
+        Revenue=('Importe Neto', 'sum'), Margen_Euros=('Margen_Euros', 'sum')
+    ).reset_index()
     vertical_monthly['Margen_Pct'] = np.where(
         vertical_monthly['Revenue'] != 0,
         vertical_monthly['Margen_Euros'] / vertical_monthly['Revenue'],
         0
     )
 
-    # ── MARGINS table from openpyxl (static data like Stock, Budget, LY) ──
-    ws_m = wb_raw['MARGINS']
-    margins_rows = []
-    header_rows = {4:'2 WHEELS', 39:'VARIOS', 49:'FREE TIME', 62:'OUTDOOR TECH', 72:'SIN CLASIFICAR'}
-    vertical_map = {
-        (5, 38): '2 WHEELS',
-        (39, 48): 'VARIOS',
-        (50, 61): 'FREE TIME',
-        (63, 71): 'OUTDOOR TECH',
-        (72, 73): 'SIN CLASIFICAR',
-    }
-
-    month_cols = {
-        'Enero':      (16, 18),   # P=Revenue, R=Margen€
-        'Febrero':    (19, 21),
-        'Marzo':      (22, 24),
-        'Abril':      (25, 27),
-        'Mayo':       (28, 30),
-        'Junio':      (31, 33),
-        'Julio':      (34, 36),
-        'Agosto':     (37, 39),
-        'Septiembre': (40, 42),
-        'Octubre':    (43, 45),
-        'Noviembre':  (46, 48),
-        'Diciembre':  (49, 51),
-    }
-
-    skip_rows = {3, 4, 39, 49, 62, 72}  # totals/headers rows
-    totals_rows = {3, 5, 40, 50, 63, 73}
-
-    for row in ws_m.iter_rows(min_row=3, max_row=73, max_col=51):
-        rn = row[0].row
-        marca = row[0].value
-        if not marca or marca in ('Marca', '') or isinstance(row[1].value, str) and row[1].value == 'Stock':
-            continue
-
-        def safe(v):
-            if isinstance(v, (int, float)): return v
-            return 0
-
-        vertical = '—'
-        for (r1, r2), v in vertical_map.items():
-            if r1 <= rn <= r2:
-                vertical = v
-                break
-
-        rec = {
-            'row':         rn,
-            'Marca':       str(marca).strip(),
-            'Vertical':    vertical,
-            'Stock':       safe(row[1].value),
-            'Budget_Rev':  safe(row[2].value),
-            'Budget_Mg%':  safe(row[3].value),
-            'Budget_MgEur':safe(row[4].value),
-            'Acum_Rev':    safe(row[5].value),
-            'Acum_Mg%':    safe(row[6].value),
-            'Acum_MgEur':  safe(row[7].value),
-            'LY_Rev':      safe(row[9].value),
-            'LY_MgEur':    safe(row[10].value),
-            'LY_Mg%':      safe(row[11].value),
-        }
-        for mes, (rc, rm) in month_cols.items():
-            rec[f'{mes}_Rev']    = safe(row[rc-1].value)
-            rec[f'{mes}_MgEur']  = safe(row[rm-1].value)
-        margins_rows.append(rec)
-
-    df_margins = pd.DataFrame(margins_rows)
-
-    # ── Budget monthly totals ──
     month_budget_cols = {
         1:'Venta Enero',2:'Venta Febrero',3:'Venta Marzo',4:'Venta Abril',
         5:'Venta Mayo',6:'Venta Junio',7:'Venta Julio',8:'Venta Agosto',
@@ -285,19 +382,20 @@ def load_data(uploaded_file=None):
     }
     budget_monthly = {}
     for m, col in month_budget_cols.items():
-        budget_monthly[m] = df_budget_raw[col].sum() if col in df_budget_raw.columns else 0
+        budget_monthly[m] = pd.to_numeric(df_budget_raw[col], errors='coerce').fillna(0).sum() if col in df_budget_raw.columns else 0
+
+    df_margins = build_margins_table(df_estado, df_stock, df_margin_ly)
 
     return {
-        'ventas':          df_ventas,
-        'ventas_full':     df_ventas_full,
-        'familias':        df_familias,
-        'budget_raw':      df_budget_raw,
-        'margins':         df_margins,
-        'brand_monthly':   brand_monthly,
-        'vertical_monthly':vertical_monthly,
-        'budget_monthly':  budget_monthly,
+        'ventas': df_ventas,
+        'ventas_full': df_ventas_full,
+        'familias': df_familias,
+        'budget_raw': df_budget_raw,
+        'margins': df_margins,
+        'brand_monthly': brand_monthly,
+        'vertical_monthly': vertical_monthly,
+        'budget_monthly': budget_monthly,
     }
-
 
 # ── Chart helpers ───────────────────────────────────────────────────────────────
 CHART_LAYOUT = dict(
@@ -353,42 +451,96 @@ def metric_card(label, value, delta=None, delta_label="vs LY"):
 
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────────
+firebase_ok, firebase_msg = init_firebase()
+
 with st.sidebar:
     st.markdown("### 🏍️ **Sportech IB**")
     st.markdown('<div style="color:#5a6378;font-size:11px;margin-bottom:20px;">Monthly Performance Dashboard</div>', unsafe_allow_html=True)
 
-    uploaded = st.file_uploader(
-        "Cargar Excel",
-        type=["xlsx"],
-        help="Sube el TemplateMonthly para actualizar los datos"
-    )
+    if firebase_ok:
+        st.success("Firebase conectado")
+    else:
+        st.error(firebase_msg)
 
-    st.markdown("---")
+    st.markdown("#### 📤 Carga mensual/anual (Excel)")
+    up_ventas = st.file_uploader("INPUT (Mensual) Ventas", type=["xlsx"], key='u_ventas')
+    up_stock = st.file_uploader("INPUT (Mensual) Stock", type=["xlsx"], key='u_stock')
+    up_margin_ly = st.file_uploader("INPUT (Anual) MARGIN LY", type=["xlsx"], key='u_margin')
+
+    if st.button("Guardar Excel en Firebase", use_container_width=True, disabled=not firebase_ok):
+        try:
+            if up_ventas is not None:
+                save_df_to_firebase('datasets/mensual_ventas', read_sheet(up_ventas, 'INPUT (Mensual) Ventas'))
+            if up_stock is not None:
+                save_df_to_firebase('datasets/mensual_stock', read_sheet(up_stock, 'INPUT (Mensual) Stock'))
+            if up_margin_ly is not None:
+                save_df_to_firebase('datasets/anual_margin_ly', read_sheet(up_margin_ly, 'INPUT (Anual) MARGIN LY'))
+            st.success('Datos de Excel guardados correctamente.')
+        except Exception as e:
+            st.error(f'No se pudo guardar: {e}')
+
+    st.markdown('---')
     page = st.radio(
         "Sección",
-        ["📊 Overview · RECAP", "📈 MARGINS · Marcas", "🏍️ Vertical 2 Wheels",
+        ["⚙️ Configuración de Datos", "📊 Overview · RECAP", "📈 MARGINS · Marcas", "🏍️ Vertical 2 Wheels",
          "🌲 Vertical Free Time", "📡 Vertical Outdoor Tech"],
         label_visibility="collapsed"
     )
     st.markdown("---")
-    st.markdown('<div style="color:#5a6378;font-size:10px;">Datos: Enero 2026 · Sportech IB</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#5a6378;font-size:10px;">Datos en Firebase Realtime Database</div>', unsafe_allow_html=True)
 
+# ── Configuración editable (Firebase) ─────────────────────────────────────────
+if page == "⚙️ Configuración de Datos":
+    st.title("⚙️ Configuración de datos anuales")
+    if not firebase_ok:
+        st.stop()
+
+    st.caption("Edita y guarda en Firebase: Budget, Estado Marcas y Familias.")
+
+    tabs = st.tabs(["INPUT (Anual) Budget", "INPUT (Anual) Estado Marcas", "INPUT (Anual) Familias"])
+    table_map = [
+        ('datasets/anual_budget', 'budget_editor'),
+        ('datasets/anual_estado_marcas', 'estado_editor'),
+        ('datasets/anual_familias', 'familias_editor'),
+    ]
+
+    for tab, (path, key) in zip(tabs, table_map):
+        with tab:
+            df = load_df_from_firebase(path)
+            edited = st.data_editor(df, num_rows='dynamic', use_container_width=True, key=key)
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                if st.button("Guardar", key=f"save_{key}", use_container_width=True):
+                    save_df_to_firebase(path, edited)
+                    st.success("Guardado en Firebase")
+            with c2:
+                up = st.file_uploader("Cargar desde Excel (opcional)", type=['xlsx'], key=f"u_{key}")
+                if up is not None and st.button("Importar Excel", key=f"import_{key}"):
+                    name = {
+                        'datasets/anual_budget': 'INPUT (Anual) Budget',
+                        'datasets/anual_estado_marcas': 'INPUT (Anual) Estado Marcas',
+                        'datasets/anual_familias': 'INPUT (Anual) Familias',
+                    }[path]
+                    new_df = read_sheet(up, name)
+                    save_df_to_firebase(path, new_df)
+                    st.success("Importado y guardado")
+    st.stop()
 
 # ── Load data ───────────────────────────────────────────────────────────────────
-if uploaded is None:
+if not firebase_ok:
+    st.error(firebase_msg)
+    st.stop()
+
+data = load_data_from_firebase()
+if data is None:
     st.markdown("""
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
                 height:60vh;gap:16px;">
         <div style="font-size:64px;">🏍️</div>
         <div style="font-size:28px;font-weight:800;color:#e8ff00;">Sportech IB Dashboard</div>
-        <div style="color:#5a6378;font-size:14px;">Sube el archivo <strong>TemplateMonthly.xlsx</strong> desde el panel lateral</div>
+        <div style="color:#5a6378;font-size:14px;">Sube <strong>INPUT (Mensual) Ventas</strong> y configura <strong>INPUT (Anual) Familias</strong> para comenzar.</div>
     </div>
     """, unsafe_allow_html=True)
-    st.stop()
-
-data = load_data(uploaded)
-if data is None:
-    st.error("No se pudo cargar el archivo.")
     st.stop()
 
 df_margins      = data['margins']
