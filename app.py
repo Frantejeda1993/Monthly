@@ -888,11 +888,12 @@ avail_months = sorted(brand_monthly['Mes Factura'].unique())
 current_month = avail_months[-1] if avail_months else 1
 current_month_name = MONTHS_ES.get(current_month, str(current_month))
 
-total_rev   = df_ventas_full['Importe Neto'].sum()
-total_mg_eur= df_ventas_full['Margen_Euros'].sum()
+ventas_current = df_ventas_full[df_ventas_full['Mes Factura'] == current_month]
+total_rev   = ventas_current['Importe Neto'].sum()
+total_mg_eur= ventas_current['Margen_Euros'].sum()
 total_mg_pct= total_mg_eur / total_rev if total_rev else 0
 total_stock = df_margins['Stock'].sum()
-budget_enero= budget_monthly.get(1, 0)
+bud_mes     = budget_monthly.get(current_month, 0)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -918,7 +919,7 @@ if page == "📊 Overview · RECAP":
     budget_rev= float(budget_tot[0]) if len(budget_tot) > 0 else 0
 
     with c1:
-        st.metric("Revenue Enero", fmt_eur(total_rev),
+        st.metric(f"Revenue {current_month_name}", fmt_eur(total_rev),
                   f"{(total_rev/ly_rev*12 - 1)*100:+.1f}% vs LY (anualiz.)" if ly_rev else "—")
     with c2:
         st.metric("Margen €", fmt_eur(total_mg_eur),
@@ -929,10 +930,9 @@ if page == "📊 Overview · RECAP":
     with c4:
         st.metric("Stock", fmt_eur(total_stock))
     with c5:
-        bud_ene = budget_monthly.get(1, 0)
-        cumpl = total_rev / bud_ene if bud_ene else 0
+        cumpl = total_rev / bud_mes if bud_mes else 0
         st.metric("Cumpl. Budget", fmt_pct(cumpl),
-                  f"Budget: {fmt_eur(bud_ene)}")
+                  f"Budget: {fmt_eur(bud_mes)}")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1053,7 +1053,7 @@ if page == "📊 Overview · RECAP":
     st.plotly_chart(fig3, width='stretch')
 
     # ── Top brands table ──
-    st.markdown('<div class="section-header">Top Marcas · Enero 2026</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Top Marcas · {current_month_name} 2026</div>', unsafe_allow_html=True)
     top_brands = brand_monthly[brand_monthly['Mes Factura']==current_month].copy()
     top_brands = top_brands[top_brands['Nombre'].notna() & (top_brands['Nombre'] != '0 - SIN CLASIFICAR')]
     top_brands = top_brands.sort_values('Revenue', ascending=False).head(15)
@@ -1295,7 +1295,7 @@ else:
     # ── KPI row ──
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.metric("Revenue Enero", fmt_eur(rev_v),
+        st.metric(f"Revenue {current_month_name}", fmt_eur(rev_v),
                   f"Budget: {fmt_eur(bud_monthly_v)}")
     with k2:
         cumpl_v = rev_v / bud_monthly_v if bud_monthly_v else 0
@@ -1367,7 +1367,7 @@ else:
             marker_line_color='#3d4b63', marker_line_width=1,
         ))
         fig_bv.add_trace(go.Bar(
-            name='Revenue Enero',
+            name=f'Revenue {current_month_name}',
             x=merged_v['Nombre'],
             y=merged_v['Revenue'],
             marker_color=V_COLOR,
