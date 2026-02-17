@@ -1,5 +1,4 @@
 import re
-import warnings
 from datetime import datetime, timezone
 from io import BytesIO
 from urllib.parse import urlparse
@@ -12,8 +11,6 @@ import streamlit as st
 
 import firebase_admin
 from firebase_admin import credentials, db
-
-warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Sportech IB · Dashboard", page_icon="🏍️", layout="wide")
 
@@ -162,11 +159,25 @@ def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> p
             if date_col is None:
                 raise ValueError(f"{dataset_name}: falta columna de mes o fecha.")
             parsed = pd.to_datetime(dfx[date_col], errors="coerce", dayfirst=True)
+            invalid_dates = dfx[date_col].notna() & parsed.isna()
+            if invalid_dates.any():
+                raise ValueError(
+                    f"{dataset_name}: hay fechas inválidas en '{date_col}' que no se pueden interpretar."
+                )
             dfx["Mes Factura"] = parsed.dt.month
         else:
             dfx["Mes Factura"] = pd.to_numeric(dfx[month_col], errors="coerce")
+            invalid_months = dfx[month_col].notna() & dfx["Mes Factura"].isna()
+            if invalid_months.any():
+                raise ValueError(
+                    f"{dataset_name}: hay valores inválidos en '{month_col}' que no se pueden convertir a mes."
+                )
         dfx = dfx[dfx["Mes Factura"].between(1, 12, inclusive="both")]
-        dfx["Importe Neto"] = pd.to_numeric(dfx["Importe Neto"], errors="coerce").fillna(0)
+        importe_num = pd.to_numeric(dfx["Importe Neto"], errors="coerce")
+        invalid_importe = dfx["Importe Neto"].notna() & importe_num.isna()
+        if invalid_importe.any():
+            raise ValueError(f"{dataset_name}: hay importes netos inválidos que no se pueden convertir a número.")
+        dfx["Importe Neto"] = importe_num.fillna(0)
         if "Margen_Euros" not in dfx.columns:
             mg_pct_col = _first_existing(dfx, ["CR3: % Margen s/Venta", "Margen %", "Margin %"])
             if mg_pct_col:
