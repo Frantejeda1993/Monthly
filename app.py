@@ -162,6 +162,20 @@ def _to_records(df: pd.DataFrame):
     return clean.to_dict(orient='records')
 
 
+def _to_firebase_payload(df: pd.DataFrame):
+    """Serializa DataFrames evitando usar nombres de columna como claves JSON.
+
+    Firebase Realtime Database no permite ciertos caracteres en claves
+    (., #, $, [, ], /). Varias columnas del Excel los incluyen.
+    """
+    clean = df.copy().replace({np.nan: None})
+    return {
+        '__format__': 'table_v1',
+        'columns': [str(c) for c in clean.columns],
+        'rows': clean.values.tolist(),
+    }
+
+
 def _to_plain_dict(value):
     if isinstance(value, dict):
         return {k: _to_plain_dict(v) for k, v in value.items()}
@@ -292,7 +306,7 @@ def init_firebase():
 
 def save_df_to_firebase(path: str, df: pd.DataFrame):
     ref = db.reference(path)
-    ref.set(_to_records(df))
+    ref.set(_to_firebase_payload(df))
 
 
 def load_df_from_firebase(path: str) -> pd.DataFrame:
@@ -300,6 +314,14 @@ def load_df_from_firebase(path: str) -> pd.DataFrame:
     raw = ref.get()
     if not raw:
         return pd.DataFrame()
+
+    # Nuevo formato robusto frente a claves inválidas en Firebase.
+    if isinstance(raw, dict) and raw.get('__format__') == 'table_v1':
+        cols = raw.get('columns') or []
+        rows = raw.get('rows') or []
+        return pd.DataFrame(rows, columns=cols)
+
+    # Compatibilidad con datasets existentes guardados como lista de registros.
     if isinstance(raw, dict):
         raw = list(raw.values())
     return pd.DataFrame(raw)
