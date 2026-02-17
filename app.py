@@ -161,20 +161,73 @@ def _to_records(df: pd.DataFrame):
     return clean.to_dict(orient='records')
 
 
+def _to_plain_dict(value):
+    if isinstance(value, dict):
+        return {k: _to_plain_dict(v) for k, v in value.items()}
+    if hasattr(value, 'items'):
+        return {k: _to_plain_dict(v) for k, v in value.items()}
+    return value
+
+
+def _extract_firebase_config():
+    secrets = _to_plain_dict(st.secrets)
+    firebase_section = secrets.get('firebase', {}) if isinstance(secrets, dict) else {}
+
+    merged = {}
+    if isinstance(secrets, dict):
+        merged.update(secrets)
+    if isinstance(firebase_section, dict):
+        merged.update(firebase_section)
+
+    db_url = (
+        merged.get('databaseURL')
+        or merged.get('database_url')
+        or merged.get('firebase_database_url')
+        or merged.get('FIREBASE_DATABASE_URL')
+    )
+
+    sa = merged.get('service_account') or merged.get('firebase_service_account')
+    if isinstance(sa, str):
+        try:
+            import json
+            sa = json.loads(sa)
+        except Exception:
+            sa = None
+
+    if not isinstance(sa, dict):
+        sa = {
+            k: merged.get(k) for k in [
+                'type', 'project_id', 'private_key_id', 'private_key', 'client_email',
+                'client_id', 'auth_uri', 'token_uri', 'auth_provider_x509_cert_url', 'client_x509_cert_url'
+            ] if merged.get(k) is not None
+        }
+
+    if isinstance(sa, dict) and isinstance(sa.get('private_key'), str):
+        sa['private_key'] = sa['private_key'].replace('\\n', '\n')
+
+    return sa if isinstance(sa, dict) else {}, db_url, merged
+
+
 @st.cache_resource
 def init_firebase():
     try:
-        conf = st.secrets.get('firebase', st.secrets)
         if not firebase_admin._apps:
-            cred_info = conf.get('service_account') if isinstance(conf.get('service_account'), dict) else {
-                k: conf[k] for k in [
-                    'type', 'project_id', 'private_key_id', 'private_key', 'client_email',
-                    'client_id', 'auth_uri', 'token_uri', 'auth_provider_x509_cert_url', 'client_x509_cert_url'
-                ] if k in conf
-            }
-            database_url = conf.get('databaseURL') or conf.get('database_url')
-            if not cred_info or not database_url:
-                return False, 'Faltan credenciales de Firebase en st.secrets.'
+            cred_info, database_url, merged = _extract_firebase_config()
+            missing = []
+            if not database_url:
+                missing.append('databaseURL')
+            required_sa_keys = ['project_id', 'private_key', 'client_email']
+            if not all(cred_info.get(k) for k in required_sa_keys):
+                missing.append('service_account')
+
+            if missing:
+                available = ', '.join(sorted([str(k) for k in merged.keys()])) if isinstance(merged, dict) else 'sin claves'
+                return False, (
+                    'Faltan credenciales de Firebase en st.secrets. '
+                    f'Campos faltantes: {", ".join(missing)}. '
+                    f'Claves detectadas: {available}'
+                )
+
             cred = credentials.Certificate(cred_info)
             firebase_admin.initialize_app(cred, {'databaseURL': database_url})
         return True, 'Firebase conectado.'
