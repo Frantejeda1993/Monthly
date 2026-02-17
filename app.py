@@ -517,6 +517,20 @@ def read_sheet(uploaded_file, sheet_name):
     return pd.read_excel(bio, sheet_name=0)
 
 
+def safe_rename_first_cols(df, mapping_by_pos):
+    cols = list(df.columns)
+    rename = {}
+    for pos, target in mapping_by_pos.items():
+        if pos < len(cols) and target not in df.columns:
+            rename[cols[pos]] = target
+    return df.rename(columns=rename)
+
+
+def _warn_data_issue(message):
+    warnings.warn(message)
+    st.warning(message)
+
+
 def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     base = df_estado.copy() if not df_estado.empty else pd.DataFrame(columns=['Marca', 'Vertical'])
     if 'Marca' not in base.columns:
@@ -535,10 +549,16 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     if not df_stock.empty:
         stock = df_stock.copy()
         stock.columns = [str(c).strip() for c in stock.columns]
-        if 'Marca' not in stock.columns:
-            stock.rename(columns={stock.columns[0]: 'Marca'}, inplace=True)
-        if 'Stock' not in stock.columns:
-            stock.rename(columns={stock.columns[1]: 'Stock'}, inplace=True)
+        stock = safe_rename_first_cols(stock, {0: 'Marca', 1: 'Stock'})
+        missing_stock_cols = [c for c in ['Marca', 'Stock'] if c not in stock.columns]
+        if missing_stock_cols:
+            _warn_data_issue(
+                f"Stock sheet missing required columns {missing_stock_cols}; defaulting missing values to 0."
+            )
+            if 'Marca' not in stock.columns:
+                stock['Marca'] = ''
+            if 'Stock' not in stock.columns:
+                stock['Stock'] = 0
         stock['BrandKey'] = stock['Marca'].apply(_normalize_brand)
         stock = stock.groupby('BrandKey', as_index=False)['Stock'].sum()
         base = base.merge(stock, on='BrandKey', how='left')
@@ -548,8 +568,10 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     if not df_margin_ly.empty:
         ly = df_margin_ly.copy()
         ly.columns = [str(c).strip() for c in ly.columns]
+        ly = safe_rename_first_cols(ly, {0: 'Marca'})
         if 'Marca' not in ly.columns:
-            ly.rename(columns={ly.columns[0]: 'Marca'}, inplace=True)
+            _warn_data_issue("LY sheet missing required column ['Marca']; defaulting LY metrics to 0.")
+            ly['Marca'] = ''
         rename_map = {}
         for col in ly.columns:
             n = _normalize_col(col)
@@ -570,8 +592,10 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     if not df_budget.empty:
         budget = df_budget.copy()
         budget.columns = [str(c).strip() for c in budget.columns]
+        budget = safe_rename_first_cols(budget, {0: 'Marca'})
         if 'Marca' not in budget.columns:
-            budget.rename(columns={budget.columns[0]: 'Marca'}, inplace=True)
+            _warn_data_issue("Budget sheet missing required column ['Marca']; defaulting budget metrics to 0.")
+            budget['Marca'] = ''
 
         month_cols = [
             c for c in [
@@ -626,6 +650,9 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     for c in ['Stock', 'Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
         base[c] = pd.to_numeric(base[c], errors='coerce').fillna(0)
 
+    agg_names = {'TOTAL', '2 WHEELS', 'FREE TIME', 'OUTDOOR TECH', 'VARIOS'}
+    base = base[~base['BrandKey'].isin({_normalize_brand(v) for v in agg_names})].copy()
+
     base = base.drop(columns=['BrandKey'], errors='ignore')
 
     aggs = []
@@ -657,7 +684,8 @@ def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
         'LY_Mg%': (base['LY_MgEur'].sum() / base['LY_Rev'].sum()) if base['LY_Rev'].sum() else 0,
     }
 
-    return pd.concat([base, pd.DataFrame(aggs + [total])], ignore_index=True)
+    summary_rows = pd.DataFrame(aggs + [total])
+    return base, summary_rows
 
 
 def load_data_from_firebase():
@@ -667,6 +695,24 @@ def load_data_from_firebase():
     df_budget_raw = load_df_from_firebase('datasets/anual_budget')
     df_estado = load_df_from_firebase('datasets/anual_estado_marcas')
     df_familias = load_df_from_firebase('datasets/anual_familias')
+
+    datasets_to_validate = [
+        ('ventas', 'INPUT (Mensual) Ventas', df_ventas),
+        ('stock', 'INPUT (Mensual) Stock', df_stock),
+        ('margin_ly', 'INPUT (Anual) MARGIN LY', df_margin_ly),
+        ('budget', 'INPUT (Anual) Budget', df_budget_raw),
+        ('estado_marcas', 'INPUT (Anual) Estado Marcas', df_estado),
+        ('familias', 'INPUT (Anual) Familias', df_familias),
+    ]
+
+    for dataset_key, dataset_name, df in datasets_to_validate:
+        if df.empty:
+            continue
+        try:
+            validate_dataset(df, dataset_key, dataset_name)
+        except ValueError as e:
+            st.error(str(e))
+            return None
 
     if df_ventas.empty or df_familias.empty:
         return None
@@ -706,14 +752,15 @@ def load_data_from_firebase():
     for m, col in month_budget_cols.items():
         budget_monthly[m] = pd.to_numeric(df_budget_raw[col], errors='coerce').fillna(0).sum() if col in df_budget_raw.columns else 0
 
-    df_margins = build_margins_table(df_estado, df_stock, df_margin_ly, df_budget_raw)
+    df_margins_detail, df_margins_summary = build_margins_table(df_estado, df_stock, df_margin_ly, df_budget_raw)
 
     return {
         'ventas': df_ventas,
         'ventas_full': df_ventas_full,
         'familias': df_familias,
         'budget_raw': df_budget_raw,
-        'margins': df_margins,
+        'margins_detail': df_margins_detail,
+        'margins_summary': df_margins_summary,
         'brand_monthly': brand_monthly,
         'vertical_monthly': vertical_monthly,
         'budget_monthly': budget_monthly,
@@ -791,11 +838,23 @@ with st.sidebar:
     if st.button("Guardar Excel en Firebase", width='stretch', disabled=not firebase_ok):
         try:
             if up_ventas is not None:
-                save_df_to_firebase('datasets/mensual_ventas', read_sheet(up_ventas, 'INPUT (Mensual) Ventas'))
+                ventas_df = read_sheet(up_ventas, 'INPUT (Mensual) Ventas')
+                save_df_to_firebase(
+                    'datasets/mensual_ventas',
+                    validate_dataset(ventas_df, 'ventas', 'INPUT (Mensual) Ventas')
+                )
             if up_stock is not None:
-                save_df_to_firebase('datasets/mensual_stock', read_sheet(up_stock, 'INPUT (Mensual) Stock'))
+                stock_df = read_sheet(up_stock, 'INPUT (Mensual) Stock')
+                save_df_to_firebase(
+                    'datasets/mensual_stock',
+                    validate_dataset(stock_df, 'stock', 'INPUT (Mensual) Stock')
+                )
             if up_margin_ly is not None:
-                save_df_to_firebase('datasets/anual_margin_ly', read_sheet(up_margin_ly, 'INPUT (Anual) MARGIN LY'))
+                margin_ly_df = read_sheet(up_margin_ly, 'INPUT (Anual) MARGIN LY')
+                save_df_to_firebase(
+                    'datasets/anual_margin_ly',
+                    validate_dataset(margin_ly_df, 'margin_ly', 'INPUT (Anual) MARGIN LY')
+                )
             st.success('Datos de Excel guardados correctamente.')
         except Exception as e:
             st.error(f'No se pudo guardar: {e}')
@@ -820,20 +879,23 @@ if page == "⚙️ Configuración de Datos":
 
     tabs = st.tabs(["INPUT (Anual) Budget", "INPUT (Anual) Estado Marcas", "INPUT (Anual) Familias"])
     table_map = [
-        ('datasets/anual_budget', 'budget_editor'),
-        ('datasets/anual_estado_marcas', 'estado_editor'),
-        ('datasets/anual_familias', 'familias_editor'),
+        ('datasets/anual_budget', 'budget_editor', 'budget', 'INPUT (Anual) Budget'),
+        ('datasets/anual_estado_marcas', 'estado_editor', 'estado_marcas', 'INPUT (Anual) Estado Marcas'),
+        ('datasets/anual_familias', 'familias_editor', 'familias', 'INPUT (Anual) Familias'),
     ]
 
-    for tab, (path, key) in zip(tabs, table_map):
+    for tab, (path, key, dataset_key, dataset_name) in zip(tabs, table_map):
         with tab:
             df = load_df_from_firebase(path)
             edited = st.data_editor(df, num_rows='dynamic', width='stretch', key=key)
             c1, c2 = st.columns([1, 3])
             with c1:
                 if st.button("Guardar", key=f"save_{key}", width='stretch'):
-                    save_df_to_firebase(path, edited)
-                    st.success("Guardado en Firebase")
+                    try:
+                        save_df_to_firebase(path, validate_dataset(edited, dataset_key, dataset_name))
+                        st.success("Guardado en Firebase")
+                    except ValueError as e:
+                        st.error(str(e))
             with c2:
                 up = st.file_uploader("Cargar desde Excel (opcional)", type=['xlsx'], key=f"u_{key}")
                 if up is not None and st.button("Importar Excel", key=f"import_{key}"):
@@ -842,9 +904,12 @@ if page == "⚙️ Configuración de Datos":
                         'datasets/anual_estado_marcas': 'INPUT (Anual) Estado Marcas',
                         'datasets/anual_familias': 'INPUT (Anual) Familias',
                     }[path]
-                    new_df = read_sheet(up, name)
-                    save_df_to_firebase(path, new_df)
-                    st.success("Importado y guardado")
+                    try:
+                        new_df = read_sheet(up, name)
+                        save_df_to_firebase(path, validate_dataset(new_df, dataset_key, dataset_name))
+                        st.success("Importado y guardado")
+                    except ValueError as e:
+                        st.error(str(e))
     st.stop()
 
 # ── Load data ───────────────────────────────────────────────────────────────────
@@ -864,7 +929,8 @@ if data is None:
     """, unsafe_allow_html=True)
     st.stop()
 
-df_margins      = data['margins']
+df_margins      = data['margins_detail']
+df_margins_sum  = data['margins_summary']
 brand_monthly   = data['brand_monthly']
 vert_monthly    = data['vertical_monthly']
 budget_monthly  = data['budget_monthly']
@@ -876,9 +942,51 @@ df_budget_raw   = data['budget_raw']
 MONTHS_ES = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',
              7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
 
+
+def period_label(month_num: int, year: int | None) -> str:
+    m = MONTHS_ES.get(month_num, str(month_num))
+    return f"{m} {year}" if year else m
+
+
+def infer_reporting_year(df_ventas_data: pd.DataFrame) -> int | None:
+    year_candidates = ['Año', 'Anio', 'Year', 'Ejercicio', 'Año Factura', 'Anio Factura']
+    for col in year_candidates:
+        if col in df_ventas_data.columns:
+            years = pd.to_numeric(df_ventas_data[col], errors='coerce').dropna()
+            years = years[(years >= 2000) & (years <= 2100)]
+            if not years.empty:
+                return int(years.mode().iloc[0])
+
+    date_candidates = ['Fecha', 'Fecha Factura', 'Fecha Documento', 'Date']
+    for col in date_candidates:
+        if col in df_ventas_data.columns:
+            parsed = pd.to_datetime(df_ventas_data[col], errors='coerce', dayfirst=True)
+            parsed = parsed.dropna()
+            if not parsed.empty:
+                return int(parsed.dt.year.mode().iloc[0])
+
+    configured_year = st.secrets.get('reporting_year')
+    if configured_year is not None:
+        configured_year = pd.to_numeric(pd.Series([configured_year]), errors='coerce').iloc[0]
+        if pd.notna(configured_year):
+            return int(configured_year)
+
+    return None
+
+
+def contextual_label(prefix: str, month_num: int | None, year: int | None, neutral: str = 'Periodo seleccionado') -> str:
+    if month_num:
+        return f"{prefix} {period_label(month_num, year)}"
+    if year:
+        return f"{prefix} {year}"
+    return f"{prefix} {neutral}"
+
 avail_months = sorted(brand_monthly['Mes Factura'].unique())
 current_month = avail_months[-1] if avail_months else 1
 current_month_name = MONTHS_ES.get(current_month, str(current_month))
+reporting_year = infer_reporting_year(df_ventas)
+overview_period = period_label(current_month, reporting_year)
+period_suffix = str(reporting_year) if reporting_year else 'Año actual'
 
 total_rev   = df_ventas_full['Importe Neto'].sum()
 total_mg_eur= df_ventas_full['Margen_Euros'].sum()
@@ -892,31 +1000,32 @@ budget_enero= budget_monthly.get(1, 0)
 # ════════════════════════════════════════════════════════════════════════════════
 if page == "📊 Overview · RECAP":
 
+    safe_current_month_name = escape(current_month_name)
     st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
         <h1 style="margin:0;font-size:32px;">RECAP</h1>
-        <span style="color:#5a6378;font-size:14px;">Resumen Global · {current_month_name} 2026</span>
+        <span style="color:#5a6378;font-size:14px;">Resumen Global · {overview_period if reporting_year else 'Periodo seleccionado'}</span>
     </div>""", unsafe_allow_html=True)
 
     # ── KPI row ──
     c1, c2, c3, c4, c5 = st.columns(5)
-    ly_total = df_margins.loc[df_margins['Marca']=='TOTAL','LY_Rev'].values
+    ly_total = df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'LY_Rev'].values
     ly_rev   = ly_total[0] if len(ly_total) > 0 else 0
-    ly_mg    = df_margins.loc[df_margins['Marca']=='TOTAL','LY_MgEur'].values
+    ly_mg    = df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'LY_MgEur'].values
     ly_mg_eur= ly_mg[0] if len(ly_mg) > 0 else 0
     ly_mg_pct= ly_mg_eur / ly_rev if ly_rev else 0
-    budget_tot= df_margins.loc[df_margins['Marca']=='TOTAL','Budget_Rev'].values
+    budget_tot= df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'Budget_Rev'].values
     budget_rev= float(budget_tot[0]) if len(budget_tot) > 0 else 0
 
     with c1:
-        st.metric("Revenue Enero", fmt_eur(total_rev),
+        st.metric(contextual_label("Revenue", current_month, reporting_year), fmt_eur(total_rev),
                   f"{(total_rev/ly_rev*12 - 1)*100:+.1f}% vs LY (anualiz.)" if ly_rev else "—")
     with c2:
         st.metric("Margen €", fmt_eur(total_mg_eur),
                   f"{(total_mg_pct - ly_mg_pct)*100:+.1f}pp vs LY" if ly_rev else "—")
     with c3:
         st.metric("Margen %", fmt_pct(total_mg_pct),
-                  f"Budget: {fmt_pct(df_margins.loc[df_margins['Marca']=='TOTAL','Budget_Mg%'].values[0] if len(df_margins.loc[df_margins['Marca']=='TOTAL']) else 0)}")
+                  f"Budget: {fmt_pct(df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'Budget_Mg%'].values[0] if len(df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL']) else 0)}")
     with c4:
         st.metric("Stock", fmt_eur(total_stock))
     with c5:
@@ -939,7 +1048,7 @@ if page == "📊 Overview · RECAP":
         verticals_summary['Margen_Pct'] = verticals_summary['Margen_Euros'] / verticals_summary['Revenue']
 
         # Add budget per vertical using margins data
-        v_budget = df_margins[df_margins['Marca'].isin(['2 WHEELS','FREE TIME','OUTDOOR TECH'])][['Marca','Budget_Rev']].copy()
+        v_budget = df_margins_sum[df_margins_sum['Marca'].isin(['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH'])][['Marca', 'Budget_Rev']].copy()
         v_budget.columns = ['Columna1','Budget']
         v_budget['Columna1'] = v_budget['Columna1'].str.upper().str.strip()
         verticals_summary['Columna1_upper'] = verticals_summary['Columna1'].str.upper().str.strip()
@@ -947,6 +1056,7 @@ if page == "📊 Overview · RECAP":
         fig = go.Figure()
         for _, row in verticals_summary.iterrows():
             vname = str(row['Columna1'])
+            safe_vname = escape(vname)
             color = VERTICAL_COLORS.get(vname.upper(), '#7eb8ff')
             bud_match = v_budget[v_budget['Columna1']==vname.upper()]
             bud_val = float(bud_match['Budget'].iloc[0]) if len(bud_match) else 0
@@ -961,7 +1071,7 @@ if page == "📊 Overview · RECAP":
                 text=[fmt_eur(row['Revenue'])],
                 textposition='outside',
                 textfont=dict(size=11, color=color),
-                hovertemplate=f"<b>{vname}</b><br>Revenue: €%{{y:,.0f}}<br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
+                hovertemplate=f"<b>{safe_vname}</b><br>Revenue: €%{{y:,.0f}}<br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
             ))
             if monthly_budget > 0:
                 fig.add_shape(type='line',
@@ -985,6 +1095,7 @@ if page == "📊 Overview · RECAP":
         fig2 = go.Figure()
         for _, row in verticals_summary.iterrows():
             vname = str(row['Columna1'])
+            safe_vname = escape(vname)
             color = VERTICAL_COLORS.get(vname.upper(), '#7eb8ff')
             fig2.add_trace(go.Bar(
                 name=vname,
@@ -996,7 +1107,7 @@ if page == "📊 Overview · RECAP":
                 text=[fmt_pct(row['Margen_Pct'])],
                 textposition='outside',
                 textfont=dict(size=11, color=color),
-                hovertemplate=f"<b>{vname}</b><br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
+                hovertemplate=f"<b>{safe_vname}</b><br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
             ))
 
         fig2.update_layout(**CHART_LAYOUT, height=320, showlegend=False, bargap=0.35)
@@ -1005,7 +1116,7 @@ if page == "📊 Overview · RECAP":
         st.plotly_chart(fig2, width='stretch')
 
     # ── Budget evolution ──
-    st.markdown('<div class="section-header">Budget Mensual 2026 — Distribución</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Budget Mensual {period_suffix} — Distribución</div>', unsafe_allow_html=True)
     months_list = list(MONTHS_ES.values())
     budget_vals = [budget_monthly.get(m, 0) for m in range(1, 13)]
     cum_budget  = np.cumsum(budget_vals)
@@ -1042,7 +1153,7 @@ if page == "📊 Overview · RECAP":
     st.plotly_chart(fig3, width='stretch')
 
     # ── Top brands table ──
-    st.markdown('<div class="section-header">Top Marcas · Enero 2026</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Top Marcas · {overview_period if reporting_year else "Periodo seleccionado"}</div>', unsafe_allow_html=True)
     top_brands = brand_monthly[brand_monthly['Mes Factura']==current_month].copy()
     top_brands = top_brands[top_brands['Nombre'].notna() & (top_brands['Nombre'] != '0 - SIN CLASIFICAR')]
     top_brands = top_brands.sort_values('Revenue', ascending=False).head(15)
@@ -1053,43 +1164,30 @@ if page == "📊 Overview · RECAP":
         on='Nombre', how='left'
     )
 
-    def render_table(df):
-        rows = ""
-        for _, r in df.iterrows():
-            v = str(r.get('Columna1','—') or '—').upper().strip()
-            tag_cls = {'2 WHEELS':'tag-2w','FREE TIME':'tag-ft','OUTDOOR TECH':'tag-ot'}.get(v,'')
-            tag_label = {'2 WHEELS':'2W','FREE TIME':'FT','OUTDOOR TECH':'OT'}.get(v,'—')
-            mg_color = '#2ed573' if r['Margen_Pct'] > 0.2 else ('#ff4757' if r['Margen_Pct'] < 0 else '#d4dbe8')
-            rev_pct = r['Revenue'] / total_rev * 100
-            rows += f"""
-            <tr style="border-bottom:1px solid #1a1f2b;">
-                <td style="padding:8px 12px;font-weight:600;">{r['Nombre']}</td>
-                <td style="padding:8px 12px;"><span class="tag {tag_cls}">{tag_label}</span></td>
-                <td style="padding:8px 12px;font-family:'DM Mono',monospace;text-align:right;">€{r['Revenue']:>10,.0f}</td>
-                <td style="padding:8px 12px;font-family:'DM Mono',monospace;text-align:right;">€{r['Margen_Euros']:>8,.0f}</td>
-                <td style="padding:8px 12px;font-family:'DM Mono',monospace;text-align:right;color:{mg_color};">{r['Margen_Pct']*100:.1f}%</td>
-                <td style="padding:8px 12px;">
-                    <div style="background:#252d3d;border-radius:4px;height:6px;">
-                        <div style="background:#e8ff00;border-radius:4px;height:6px;width:{min(rev_pct*3,100):.0f}%;"></div>
-                    </div>
-                </td>
-            </tr>"""
-        return f"""
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead>
-                <tr style="background:#12151c;border-bottom:1px solid #252d3d;">
-                    <th style="padding:8px 12px;text-align:left;color:#5a6378;font-size:11px;letter-spacing:.1em;text-transform:uppercase;">Marca</th>
-                    <th style="padding:8px 12px;text-align:left;color:#5a6378;font-size:11px;">Vert.</th>
-                    <th style="padding:8px 12px;text-align:right;color:#5a6378;font-size:11px;">Revenue</th>
-                    <th style="padding:8px 12px;text-align:right;color:#5a6378;font-size:11px;">Margen €</th>
-                    <th style="padding:8px 12px;text-align:right;color:#5a6378;font-size:11px;">Mg%</th>
-                    <th style="padding:8px 12px;text-align:left;color:#5a6378;font-size:11px;">Share</th>
-                </tr>
-            </thead>
-            <tbody style="background:#1a1f2b;">{rows}</tbody>
-        </table>"""
+    top_brands_show = top_brands.copy()
+    top_brands_show['Nombre'] = top_brands_show['Nombre'].apply(lambda v: escape(str(v or '')))
+    top_brands_show['Columna1'] = top_brands_show['Columna1'].apply(
+        lambda v: escape(str(v or '—').strip().upper())
+    )
+    top_brands_show['Share'] = np.where(
+        total_rev > 0,
+        top_brands_show['Revenue'] / total_rev,
+        0,
+    )
 
-    st.markdown(render_table(top_brands), unsafe_allow_html=True)
+    st.dataframe(
+        top_brands_show[['Nombre', 'Columna1', 'Revenue', 'Margen_Euros', 'Margen_Pct', 'Share']],
+        width='stretch',
+        hide_index=True,
+        column_config={
+            'Nombre': 'Marca',
+            'Columna1': 'Vertical',
+            'Revenue': st.column_config.NumberColumn('Revenue', format='€%.0f'),
+            'Margen_Euros': st.column_config.NumberColumn('Margen €', format='€%.0f'),
+            'Margen_Pct': st.column_config.NumberColumn('Mg%', format='%.1f%%'),
+            'Share': st.column_config.ProgressColumn('Share', format='%.1f%%', min_value=0.0, max_value=1.0),
+        },
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1097,10 +1195,10 @@ if page == "📊 Overview · RECAP":
 # ════════════════════════════════════════════════════════════════════════════════
 elif page == "📈 MARGINS · Marcas":
 
-    st.markdown("""
+    st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
         <h1 style="margin:0;font-size:32px;">MARGINS</h1>
-        <span style="color:#5a6378;font-size:14px;">Detalle por Marca · Datos 2026</span>
+        <span style="color:#5a6378;font-size:14px;">Detalle por Marca · Datos {period_suffix if reporting_year else 'Año actual'}</span>
     </div>""", unsafe_allow_html=True)
 
     # Filter controls
@@ -1116,8 +1214,7 @@ elif page == "📈 MARGINS · Marcas":
 
     df_fil = df_margins[
         df_margins['Vertical'].isin(vertical_filter) &
-        ~df_margins['Marca'].isin(['TOTAL','2 WHEELS','FREE TIME','OUTDOOR TECH','VARIOS',
-                                    'SIN CLASIFICAR','NUEVAS MARCAS','0 - SIN CLASIFICAR','—'])
+        ~df_margins['Marca'].isin(['SIN CLASIFICAR', 'NUEVAS MARCAS', '0 - SIN CLASIFICAR', '—'])
     ].copy()
 
     sort_map = {"Budget Revenue":"Budget_Rev","Stock":"Stock","LY Revenue":"LY_Rev","Margen% Budget":"Budget_Mg%"}
@@ -1148,7 +1245,7 @@ elif page == "📈 MARGINS · Marcas":
             hover_name='Marca',
             hover_data={'LY_Rev':':.0f','Budget_Rev':':.0f','Stock':':.0f','Vertical':False},
             size_max=40,
-            labels={'LY_Rev':'Revenue LY (€)','Budget_Rev':'Budget 2026 (€)'},
+            labels={'LY_Rev':'Revenue LY (€)','Budget_Rev':f'Budget {period_suffix} (€)'},
         )
         # Diagonal reference line
         max_val = max(scatter_df['LY_Rev'].max(), scatter_df['Budget_Rev'].max())
@@ -1254,10 +1351,12 @@ else:
     V_COLOR = cfg['color']
     V_ICON  = cfg['icon']
 
+    safe_current_month_name = escape(current_month_name)
+    safe_v_label = escape(V_LABEL)
     st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
         <h1 style="margin:0;font-size:32px;color:{V_COLOR};">{V_ICON} {V_LABEL}</h1>
-        <span style="color:#5a6378;font-size:14px;">Vertical Dashboard · {current_month_name} 2026</span>
+        <span style="color:#5a6378;font-size:14px;">Vertical Dashboard · {overview_period if reporting_year else 'Periodo seleccionado'}</span>
     </div>""", unsafe_allow_html=True)
 
     # Filter data for this vertical
@@ -1282,7 +1381,7 @@ else:
     mgpct_v= mg_v / rev_v if rev_v else 0
 
     # Budget for this vertical
-    v_row = df_margins[df_margins['Marca'].str.upper()==V_KEY]
+    v_row = df_margins_sum[df_margins_sum['Marca'].str.upper() == V_KEY]
     budget_v     = float(v_row['Budget_Rev'].iloc[0]) if len(v_row) else 0
     budget_mg_v  = float(v_row['Budget_Mg%'].iloc[0]) if len(v_row) else 0
     stock_v      = float(v_row['Stock'].iloc[0]) if len(v_row) else 0
@@ -1295,7 +1394,7 @@ else:
     # ── KPI row ──
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.metric("Revenue Enero", fmt_eur(rev_v),
+        st.metric(contextual_label("Revenue", current_month, reporting_year), fmt_eur(rev_v),
                   f"Budget: {fmt_eur(bud_monthly_v)}")
     with k2:
         cumpl_v = rev_v / bud_monthly_v if bud_monthly_v else 0
@@ -1367,7 +1466,7 @@ else:
             marker_line_color='#3d4b63', marker_line_width=1,
         ))
         fig_bv.add_trace(go.Bar(
-            name='Revenue Enero',
+            name=contextual_label('Revenue', current_month, reporting_year),
             x=merged_v['Nombre'],
             y=merged_v['Revenue'],
             marker_color=V_COLOR,
@@ -1410,7 +1509,7 @@ else:
         st.plotly_chart(fig_mgb, width='stretch')
 
     # ── Budget monthly distribution ──
-    st.markdown('<div class="section-header">Distribución Budget Mensual 2026</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Distribución Budget Mensual {period_suffix}</div>', unsafe_allow_html=True)
 
     # Get budget by month for this vertical from budget table
     vert_brand_list = brands_v['Marca'].tolist()
