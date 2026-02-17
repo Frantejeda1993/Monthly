@@ -1,295 +1,63 @@
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import numpy as np
-import hashlib
-import json
-from io import BytesIO
-from datetime import datetime, timezone
-from urllib.parse import urlparse
+import re
 import warnings
-warnings.filterwarnings('ignore')
+from datetime import datetime, timezone
+from io import BytesIO
+from urllib.parse import urlparse
 
-# ── Page config ────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Sportech IB · Dashboard",
-    page_icon="🏍️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
-# ── Custom CSS ──────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap');
-
-:root {
-    --bg:       #0a0c10;
-    --surface:  #12151c;
-    --card:     #1a1f2b;
-    --border:   #252d3d;
-    --accent:   #e8ff00;
-    --accent2:  #00e5ff;
-    --danger:   #ff4757;
-    --success:  #2ed573;
-    --muted:    #5a6378;
-    --text:     #d4dbe8;
-    --text-dim: #8896ab;
-}
-
-html, body, [data-testid="stAppViewContainer"] {
-    background-color: var(--bg) !important;
-    color: var(--text);
-    font-family: 'Syne', sans-serif;
-}
-
-[data-testid="stSidebar"] {
-    background-color: var(--surface) !important;
-    border-right: 1px solid var(--border);
-}
-
-[data-testid="stSidebar"] .block-container { padding-top: 2rem; }
-
-h1, h2, h3 { font-family: 'Syne', sans-serif; font-weight: 800; }
-
-/* Metric cards */
-.metric-card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px 24px;
-    margin-bottom: 12px;
-    transition: border-color 0.2s;
-}
-.metric-card:hover { border-color: var(--accent); }
-.metric-label {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    margin-bottom: 6px;
-}
-.metric-value {
-    font-family: 'DM Mono', monospace;
-    font-size: 28px;
-    font-weight: 500;
-    color: var(--text);
-    line-height: 1;
-}
-.metric-delta {
-    font-family: 'DM Mono', monospace;
-    font-size: 12px;
-    margin-top: 6px;
-}
-.delta-up   { color: var(--success); }
-.delta-down { color: var(--danger); }
-.delta-neu  { color: var(--text-dim); }
-
-/* Section headers */
-.section-header {
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--accent);
-    padding: 12px 0 8px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 16px;
-}
-
-/* Tag pill */
-.tag {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-.tag-2w  { background: #1a2a4a; color: #7eb8ff; border: 1px solid #2a4a7a; }
-.tag-ft  { background: #1a3a1a; color: #5de85d; border: 1px solid #2a5a2a; }
-.tag-ot  { background: #3a1a3a; color: #e87de8; border: 1px solid #5a2a5a; }
-.tag-tot { background: #2a2a1a; color: var(--accent);  border: 1px solid #4a4a2a; }
-
-/* Sidebar nav */
-.nav-item {
-    padding: 10px 14px;
-    border-radius: 8px;
-    margin: 3px 0;
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 13px;
-    transition: all 0.15s;
-}
-
-/* Plotly chart bg */
-.js-plotly-plot .plotly { background: transparent !important; }
-
-/* Streamlit overrides */
-div[data-testid="stMetric"] {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px 20px;
-}
-div[data-testid="stMetricValue"] {
-    font-family: 'DM Mono', monospace !important;
-    font-size: 22px !important;
-}
-[data-testid="stSelectbox"] label,
-[data-testid="stRadio"] label { color: var(--text-dim) !important; font-size: 12px !important; }
-
-.stDataFrame { border-radius: 10px; overflow: hidden; }
-thead tr th { background: var(--card) !important; }
-
-hr { border-color: var(--border); }
-</style>
-""", unsafe_allow_html=True)
-
-# ── Data loading + Firebase ───────────────────────────────────────────────────
 import firebase_admin
 from firebase_admin import credentials, db
 
+warnings.filterwarnings("ignore")
+
+st.set_page_config(page_title="Sportech IB · Dashboard", page_icon="🏍️", layout="wide")
+
+MONTHS_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+STATUS_OPTIONS = ["NEW", "STANDARD", "PHASE OUT"]
+FAMILY_OPTIONS = ["2 WHEELS", "FREE TIME", "OUTDOOR TECH", "UNCLASSIFIED"]
+MONTH_BUDGET_COLS = [f"Budget {MONTHS_ES[i]}" for i in range(1, 13)]
+
 
 def _normalize_col(col):
-    return str(col).strip().lower().replace(' ', '_')
-
-
-def _normalize_vertical(value):
-    key = _normalize_col(value)
-    aliases = {
-        '2_wheels': '2 WHEELS',
-        '2wheel': '2 WHEELS',
-        '2_wheel': '2 WHEELS',
-        'free_time': 'FREE TIME',
-        'freetime': 'FREE TIME',
-        'outdoor_tech': 'OUTDOOR TECH',
-        'outdoor': 'OUTDOOR TECH',
-        'varios': 'VARIOS',
-    }
-    return aliases.get(key, str(value).strip().upper() if pd.notna(value) else '—')
+    return str(col).strip().lower().replace(" ", "_")
 
 
 def _normalize_brand(value):
     if pd.isna(value):
-        return ''
+        return ""
     return str(value).strip().upper()
 
 
-def _to_records(df: pd.DataFrame):
-    clean = df.copy()
-    clean = clean.replace({np.nan: None})
-    return clean.to_dict(orient='records')
+def _first_existing(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
 
 
-FIREBASE_TABLE_VERSION = 'table_v2'
-FIREBASE_MAX_ROWS = 100_000
-FIREBASE_MAX_COLUMNS = 200
-
-
-def _schema_hash(df: pd.DataFrame) -> str:
-    schema = [(str(c), str(t)) for c, t in df.dtypes.items()]
-    encoded = json.dumps(schema, ensure_ascii=False, separators=(',', ':'))
-    return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
-
-
-def _validate_dataframe_for_firebase(df: pd.DataFrame):
-    row_count, column_count = df.shape
-
-    if row_count > 25_000:
-        warnings.warn(
-            'Dataset grande para Realtime DB. Si el crecimiento continúa, evalúa mover datasets '
-            'analíticos a Cloud Storage / BigQuery para mejor escalabilidad.'
-        )
-
-    if row_count > FIREBASE_MAX_ROWS:
-        raise ValueError(
-            f'Dataset demasiado grande para Realtime DB: {row_count} filas '
-            f'(máximo permitido: {FIREBASE_MAX_ROWS}).'
-        )
-    if column_count > FIREBASE_MAX_COLUMNS:
-        raise ValueError(
-            f'Dataset demasiado ancho para Realtime DB: {column_count} columnas '
-            f'(máximo permitido: {FIREBASE_MAX_COLUMNS}).'
-        )
-
-
-def _validate_firebase_payload_shape(payload: dict):
-    if not isinstance(payload, dict):
-        raise ValueError('El payload de Firebase debe ser un objeto JSON.')
-
-    required_meta = ['version', 'row_count', 'updated_at', 'schema_hash']
-    meta = payload.get('metadata')
-    if not isinstance(meta, dict):
-        raise ValueError('El payload debe incluir metadata válida.')
-
-    missing = [field for field in required_meta if field not in meta]
-    if missing:
-        raise ValueError(f'Faltan campos de metadata en payload: {", ".join(missing)}.')
-
-    columns = payload.get('columns')
-    if not isinstance(columns, list):
-        raise ValueError('El payload debe incluir "columns" como lista.')
-
-    has_rows = isinstance(payload.get('rows'), list)
-    chunks = payload.get('chunks')
-    has_chunks = isinstance(chunks, list)
-    if has_rows == has_chunks:
-        raise ValueError('El payload debe incluir exactamente uno de: "rows" o "chunks".')
-
-    if has_chunks:
-        for idx, chunk in enumerate(chunks):
-            if not isinstance(chunk, dict) or not isinstance(chunk.get('rows'), list):
-                raise ValueError(f'Chunk inválido en índice {idx}: se esperaba objeto con lista "rows".')
-
-
-def _metadata_from_df(df: pd.DataFrame) -> dict:
-    return {
-        'version': FIREBASE_TABLE_VERSION,
-        'row_count': int(df.shape[0]),
-        'column_count': int(df.shape[1]),
-        'updated_at': datetime.now(timezone.utc).isoformat(),
-        'schema_hash': _schema_hash(df),
-    }
-
-
-def _to_firebase_payload(df: pd.DataFrame, chunk_size: int | None = None):
-    """Serializa DataFrames evitando usar nombres de columna como claves JSON.
-
-    Firebase Realtime Database no permite ciertos caracteres en claves
-    (., #, $, [, ], /). Varias columnas del Excel los incluyen.
-    """
-    _validate_dataframe_for_firebase(df)
-    clean = df.copy().replace({np.nan: None})
-    payload = {
-        '__format__': FIREBASE_TABLE_VERSION,
-        'columns': [str(c) for c in clean.columns],
-        'metadata': _metadata_from_df(clean),
-    }
-
-    rows = clean.values.tolist()
-    if chunk_size:
-        if chunk_size <= 0:
-            raise ValueError('chunk_size debe ser un entero positivo.')
-        payload['chunks'] = [
-            {'index': idx, 'rows': rows[idx:idx + chunk_size]}
-            for idx in range(0, len(rows), chunk_size)
-        ]
-    else:
-        payload['rows'] = rows
-
-    _validate_firebase_payload_shape(payload)
-    return payload
+def _auto_short_name(brand: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z\s]", "", str(brand))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().upper()
+    if not cleaned:
+        return "BRAND"
+    tokens = cleaned.split()
+    if len(tokens) == 1:
+        return tokens[0][:12]
+    return " ".join(tokens[:2])[:18]
 
 
 def _to_plain_dict(value):
     if isinstance(value, dict):
         return {k: _to_plain_dict(v) for k, v in value.items()}
-    if hasattr(value, 'items'):
+    if hasattr(value, "items"):
         return {k: _to_plain_dict(v) for k, v in value.items()}
     return value
 
@@ -297,1289 +65,401 @@ def _to_plain_dict(value):
 def _normalize_database_url(value):
     if not isinstance(value, str):
         return None
-
     candidate = value.strip().strip('"').strip("'")
     if not candidate:
         return None
-
-    # Error común: URL duplicada (https://https://...)
-    duplicate_prefix = 'https://https://'
-    if candidate.startswith(duplicate_prefix):
-        candidate = 'https://' + candidate[len(duplicate_prefix):]
-
-    if not candidate.startswith(('http://', 'https://')):
-        candidate = f'https://{candidate}'
-
+    if candidate.startswith("https://https://"):
+        candidate = "https://" + candidate[len("https://https://"):]
+    if not candidate.startswith(("http://", "https://")):
+        candidate = f"https://{candidate}"
     parsed = urlparse(candidate)
-    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.netloc.lower() == "https":
         return None
-
-    # Evita URLs inválidas como "https" o "https://https" (host='https').
-    if parsed.netloc.lower() == 'https':
-        return None
-
-    return f'{parsed.scheme}://{parsed.netloc}'
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _extract_firebase_config():
     secrets = _to_plain_dict(st.secrets)
-    firebase_section = secrets.get('firebase', {}) if isinstance(secrets, dict) else {}
-
+    firebase_section = secrets.get("firebase", {}) if isinstance(secrets, dict) else {}
     merged = {}
     if isinstance(secrets, dict):
         merged.update(secrets)
     if isinstance(firebase_section, dict):
         merged.update(firebase_section)
 
-    db_url = (
-        merged.get('databaseURL')
-        or merged.get('database_url')
-        or merged.get('firebase_database_url')
-        or merged.get('FIREBASE_DATABASE_URL')
+    db_url = _normalize_database_url(
+        merged.get("databaseURL") or merged.get("database_url") or merged.get("FIREBASE_DATABASE_URL")
     )
-    db_url = _normalize_database_url(db_url)
-
-    sa = merged.get('service_account') or merged.get('firebase_service_account')
-    if isinstance(sa, str):
-        try:
-            import json
-            sa = json.loads(sa)
-        except Exception:
-            sa = None
-
+    sa = merged.get("service_account")
     if not isinstance(sa, dict):
         sa = {
-            k: merged.get(k) for k in [
-                'type', 'project_id', 'private_key_id', 'private_key', 'client_email',
-                'client_id', 'auth_uri', 'token_uri', 'auth_provider_x509_cert_url', 'client_x509_cert_url'
-            ] if merged.get(k) is not None
+            k: merged.get(k)
+            for k in [
+                "type", "project_id", "private_key_id", "private_key", "client_email",
+                "client_id", "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url",
+            ]
+            if merged.get(k) is not None
         }
-
-    if isinstance(sa, dict) and isinstance(sa.get('private_key'), str):
-        sa['private_key'] = sa['private_key'].replace('\\n', '\n')
-
-    return sa if isinstance(sa, dict) else {}, db_url, merged
+    if isinstance(sa, dict) and isinstance(sa.get("private_key"), str):
+        sa["private_key"] = sa["private_key"].replace("\\n", "\n")
+    return sa if isinstance(sa, dict) else {}, db_url
 
 
 @st.cache_resource
 def init_firebase():
     try:
-        cred_info, database_url, merged = _extract_firebase_config()
-        raw_database_url = (
-            merged.get('databaseURL')
-            or merged.get('database_url')
-            or merged.get('firebase_database_url')
-            or merged.get('FIREBASE_DATABASE_URL')
-        )
-
+        cred_info, database_url = _extract_firebase_config()
         if firebase_admin._apps:
-            app = firebase_admin.get_app()
-            existing_url = _normalize_database_url(
-                app.options.get('databaseURL') or app.options.get('database_url')
-            )
-
-            # Si el app cargado está corrupto (ej. host='https') o desincronizado,
-            # lo recreamos usando la config actual de st.secrets.
-            if (not existing_url) or (database_url and existing_url != database_url):
-                firebase_admin.delete_app(app)
-            else:
-                return True, 'Firebase conectado.'
-
-        missing = []
-        if not database_url:
-            missing.append('databaseURL')
-        required_sa_keys = ['project_id', 'private_key', 'client_email']
-        if not all(cred_info.get(k) for k in required_sa_keys):
-            missing.append('service_account')
-
-        if missing:
-            available = ', '.join(sorted([str(k) for k in merged.keys()])) if isinstance(merged, dict) else 'sin claves'
-            db_hint = ''
-            if raw_database_url:
-                db_hint = (
-                    f' Valor recibido para databaseURL: {raw_database_url!r}. '
-                    'Debe ser una URL válida, por ejemplo: '
-                    'https://TU-PROYECTO-default-rtdb.europe-west1.firebasedatabase.app'
-                )
-            return False, (
-                'Faltan credenciales de Firebase en st.secrets. '
-                f'Campos faltantes: {", ".join(missing)}. '
-                f'Claves detectadas: {available}.{db_hint}'
-            )
-
-        cred = credentials.Certificate(cred_info)
-        firebase_admin.initialize_app(cred, {'databaseURL': database_url})
-        return True, 'Firebase conectado.'
+            return True, "Firebase conectado"
+        if not database_url or not all(cred_info.get(k) for k in ["project_id", "private_key", "client_email"]):
+            return False, "Faltan credenciales de Firebase en st.secrets"
+        firebase_admin.initialize_app(credentials.Certificate(cred_info), {"databaseURL": database_url})
+        return True, "Firebase conectado"
     except Exception as e:
-        return False, f'Error Firebase: {e}'
+        return False, f"Error Firebase: {e}"
 
 
-def save_df_to_firebase(path: str, df: pd.DataFrame, chunk_size: int | None = None):
+def save_df_to_firebase(path: str, df: pd.DataFrame):
     ref = db.reference(path)
-    payload = _to_firebase_payload(df, chunk_size=chunk_size)
-    _validate_firebase_payload_shape(payload)
-    ref.set(payload)
+    ref.set({"columns": [str(c) for c in df.columns], "rows": df.replace({np.nan: None}).values.tolist(),
+             "updated_at": datetime.now(timezone.utc).isoformat()})
 
 
 def load_df_from_firebase(path: str) -> pd.DataFrame:
-    def _coerce_rows(rows):
-        """Normaliza filas para evitar errores con estructuras mixtas en Firebase."""
-        if isinstance(rows, dict):
-            rows = list(rows.values())
-        if not isinstance(rows, (list, tuple)):
-            return []
-
-        normalized = []
-        for row in rows:
-            if isinstance(row, dict):
-                normalized.append(row)
-                continue
-            if isinstance(row, (list, tuple)):
-                normalized.append(list(row))
-                continue
-            if hasattr(row, 'items'):
-                normalized.append(dict(row.items()))
-                continue
-
-            # Último recurso para filas sueltas (str/int/float/etc.)
-            normalized.append([row])
-        return normalized
-
-    ref = db.reference(path)
-    raw = ref.get()
+    raw = db.reference(path).get()
     if not raw:
         return pd.DataFrame()
-
-    # Formatos tabulares versionados y robustos frente a claves inválidas en Firebase.
-    if isinstance(raw, dict) and raw.get('__format__') in ('table_v1', FIREBASE_TABLE_VERSION):
-        cols = raw.get('columns') or []
-
-        rows_source = raw.get('rows')
-        chunks = raw.get('chunks')
-        if isinstance(chunks, list):
-            rows_source = []
-            for chunk in chunks:
-                if isinstance(chunk, dict):
-                    rows_source.extend(chunk.get('rows') or [])
-
-        rows = _coerce_rows(rows_source or [])
-
-        # Validación defensiva (soporta formatos legacy sin bloquear la lectura).
-        if not isinstance(cols, list):
-            cols = []
-        if isinstance(raw.get('metadata'), dict):
-            expected_rows = raw['metadata'].get('row_count')
-            if isinstance(expected_rows, int) and expected_rows != len(rows):
-                st.warning(
-                    f'El dataset {path} tiene metadata inconsistente: '
-                    f'row_count={expected_rows}, filas_leídas={len(rows)}.'
-                )
-
-        if cols:
-            normalized_dict_rows = []
-            for row in rows:
-                if isinstance(row, dict):
-                    normalized_dict_rows.append({c: row.get(c) for c in cols})
-                    continue
-                row_list = list(row) if isinstance(row, (list, tuple)) else [row]
-                normalized_dict_rows.append({c: (row_list[i] if i < len(row_list) else None) for i, c in enumerate(cols)})
-            return pd.DataFrame(normalized_dict_rows, columns=cols)
-
-        if rows and isinstance(rows[0], dict):
-            return pd.DataFrame(rows)
-
-        if cols:
-            normalized_rows = []
-            for row in rows:
-                row_list = row if isinstance(row, list) else [row]
-                if len(row_list) < len(cols):
-                    row_list = row_list + [None] * (len(cols) - len(row_list))
-                elif len(row_list) > len(cols):
-                    row_list = row_list[:len(cols)]
-                normalized_rows.append(row_list)
-            return pd.DataFrame(normalized_rows, columns=cols)
-
-        return pd.DataFrame(rows)
-
-    # Compatibilidad con datasets existentes guardados como lista de registros.
+    if isinstance(raw, dict) and "columns" in raw and "rows" in raw:
+        return pd.DataFrame(raw["rows"], columns=raw["columns"])
+    if isinstance(raw, list):
+        return pd.DataFrame(raw)
     if isinstance(raw, dict):
-        raw = list(raw.values())
-
-    return pd.DataFrame(_coerce_rows(raw))
+        return pd.DataFrame(list(raw.values()))
+    return pd.DataFrame()
 
 
 def read_sheet(uploaded_file, sheet_name):
     bio = BytesIO(uploaded_file.read())
     uploaded_file.seek(0)
     xls = pd.ExcelFile(bio)
-    if sheet_name in xls.sheet_names:
-        return pd.read_excel(bio, sheet_name=sheet_name)
-    return pd.read_excel(bio, sheet_name=0)
+    return pd.read_excel(bio, sheet_name=sheet_name if sheet_name in xls.sheet_names else 0)
 
 
-def safe_rename_first_cols(df, mapping_by_pos):
-    cols = list(df.columns)
-    rename = {}
-    for pos, target in mapping_by_pos.items():
-        if pos < len(cols) and target not in df.columns:
-            rename[cols[pos]] = target
-    return df.rename(columns=rename)
+def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        raise ValueError(f"{dataset_name} está vacío.")
+    dfx = df.copy()
+    dfx.columns = [str(c).strip() for c in dfx.columns]
+
+    if dataset_key == "sales":
+        required = ["Nombre", "Importe Neto"]
+        missing = [c for c in required if c not in dfx.columns]
+        if missing:
+            raise ValueError(f"{dataset_name}: faltan columnas {missing}.")
+        month_col = _first_existing(dfx, ["Mes Factura", "Mes", "Month"])
+        if month_col is None:
+            date_col = _first_existing(dfx, ["Fecha", "Fecha Factura", "Date"])
+            if date_col is None:
+                raise ValueError(f"{dataset_name}: falta columna de mes o fecha.")
+            parsed = pd.to_datetime(dfx[date_col], errors="coerce", dayfirst=True)
+            dfx["Mes Factura"] = parsed.dt.month
+        else:
+            dfx["Mes Factura"] = pd.to_numeric(dfx[month_col], errors="coerce")
+        dfx = dfx[dfx["Mes Factura"].between(1, 12, inclusive="both")]
+        dfx["Importe Neto"] = pd.to_numeric(dfx["Importe Neto"], errors="coerce").fillna(0)
+        if "Margen_Euros" not in dfx.columns:
+            mg_pct_col = _first_existing(dfx, ["CR3: % Margen s/Venta", "Margen %", "Margin %"])
+            if mg_pct_col:
+                dfx["Margen_Euros"] = dfx["Importe Neto"] * pd.to_numeric(dfx[mg_pct_col], errors="coerce").fillna(0) / 100
+            else:
+                dfx["Margen_Euros"] = 0
+        dfx["Margen_Euros"] = pd.to_numeric(dfx["Margen_Euros"], errors="coerce").fillna(0)
+
+    elif dataset_key == "stock":
+        if "Marca" not in dfx.columns:
+            dfx = dfx.rename(columns={dfx.columns[0]: "Marca"})
+        if "Stock" not in dfx.columns and len(dfx.columns) > 1:
+            dfx = dfx.rename(columns={dfx.columns[1]: "Stock"})
+        if "Marca" not in dfx.columns or "Stock" not in dfx.columns:
+            raise ValueError(f"{dataset_name}: se requieren columnas Marca y Stock.")
+        dfx["Stock"] = pd.to_numeric(dfx["Stock"], errors="coerce").fillna(0)
+
+    elif dataset_key == "margin_ly":
+        if "Marca" not in dfx.columns:
+            dfx = dfx.rename(columns={dfx.columns[0]: "Marca"})
+        rename = {}
+        for c in dfx.columns:
+            n = _normalize_col(c)
+            if "ly_rev" in n or n in ("revenue_ly", "ly_revenue"):
+                rename[c] = "LY_Rev"
+            if "ly_mgeur" in n or "ly_mg_eur" in n:
+                rename[c] = "LY_MgEur"
+            if "ly_mg" in n and "%" in c:
+                rename[c] = "LY_Mg%"
+        dfx = dfx.rename(columns=rename)
+        for c in ["LY_Rev", "LY_MgEur", "LY_Mg%"]:
+            if c not in dfx.columns:
+                dfx[c] = 0
+            dfx[c] = pd.to_numeric(dfx[c], errors="coerce").fillna(0)
+
+    return dfx
 
 
-def _warn_data_issue(message):
-    warnings.warn(message)
-    st.warning(message)
+def extract_brand_master(df_sales, df_stock, df_margin_ly):
+    brands = set(df_sales["Nombre"].dropna().astype(str).str.strip().tolist())
+    brands.update(df_stock["Marca"].dropna().astype(str).str.strip().tolist())
+    brands.update(df_margin_ly["Marca"].dropna().astype(str).str.strip().tolist())
+    clean = sorted({b for b in brands if b})
+    master = pd.DataFrame({"Brand": clean})
+    master["BrandKey"] = master["Brand"].apply(_normalize_brand)
+    return master
 
 
-def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
-    base = df_estado.copy() if not df_estado.empty else pd.DataFrame(columns=['Marca', 'Vertical'])
-    if 'Marca' not in base.columns:
-        base['Marca'] = ''
-    if 'Vertical' not in base.columns:
-        base['Vertical'] = '—'
+def validate_brand_config_csv(df_csv: pd.DataFrame, expected_brand_keys: set[str]):
+    required = {"Brand", "Short Name", "Status", "Family", "Annual Budget", "Expected Margin %"}
+    missing = required - set(df_csv.columns)
+    if missing:
+        raise ValueError(f"CSV inválido: faltan columnas {sorted(missing)}")
 
-    base['Marca'] = base['Marca'].astype(str).str.strip()
-    base['BrandKey'] = base['Marca'].apply(_normalize_brand)
-    base['Vertical'] = base['Vertical'].apply(_normalize_vertical)
+    cfg = df_csv.copy()
+    cfg["BrandKey"] = cfg["Brand"].apply(_normalize_brand)
+    for col in MONTH_BUDGET_COLS:
+        if col not in cfg.columns:
+            cfg[col] = np.nan
 
-    for c in ['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
-        if c not in base.columns:
-            base[c] = 0
+    bad_status = sorted(set(cfg[~cfg["Status"].isin(STATUS_OPTIONS)]["Status"].dropna().astype(str)))
+    bad_family = sorted(set(cfg[~cfg["Family"].isin(FAMILY_OPTIONS)]["Family"].dropna().astype(str)))
+    if bad_status:
+        raise ValueError(f"CSV inválido: Status no permitido {bad_status}")
+    if bad_family:
+        raise ValueError(f"CSV inválido: Family no permitida {bad_family}")
 
-    if not df_stock.empty:
-        stock = df_stock.copy()
-        stock.columns = [str(c).strip() for c in stock.columns]
-        stock = safe_rename_first_cols(stock, {0: 'Marca', 1: 'Stock'})
-        missing_stock_cols = [c for c in ['Marca', 'Stock'] if c not in stock.columns]
-        if missing_stock_cols:
-            _warn_data_issue(
-                f"Stock sheet missing required columns {missing_stock_cols}; defaulting missing values to 0."
-            )
-            if 'Marca' not in stock.columns:
-                stock['Marca'] = ''
-            if 'Stock' not in stock.columns:
-                stock['Stock'] = 0
-        stock['BrandKey'] = stock['Marca'].apply(_normalize_brand)
-        stock = stock.groupby('BrandKey', as_index=False)['Stock'].sum()
-        base = base.merge(stock, on='BrandKey', how='left')
-    if 'Stock' not in base.columns:
-        base['Stock'] = 0
+    numeric_cols = ["Annual Budget", "Expected Margin %", *MONTH_BUDGET_COLS]
+    for col in numeric_cols:
+        cfg[col] = pd.to_numeric(cfg[col], errors="coerce")
 
-    if not df_margin_ly.empty:
-        ly = df_margin_ly.copy()
-        ly.columns = [str(c).strip() for c in ly.columns]
-        ly = safe_rename_first_cols(ly, {0: 'Marca'})
-        if 'Marca' not in ly.columns:
-            _warn_data_issue("LY sheet missing required column ['Marca']; defaulting LY metrics to 0.")
-            ly['Marca'] = ''
-        rename_map = {}
-        for col in ly.columns:
-            n = _normalize_col(col)
-            if 'ly_rev' in n or n in ('revenue_ly', 'ly_revenue'):
-                rename_map[col] = 'LY_Rev'
-            if 'ly_mgeur' in n or 'ly_mg_eur' in n:
-                rename_map[col] = 'LY_MgEur'
-            if 'ly_mg' in n and '%' in col:
-                rename_map[col] = 'LY_Mg%'
-        ly = ly.rename(columns=rename_map)
-        ly['BrandKey'] = ly['Marca'].apply(_normalize_brand)
-        for c in ['LY_Rev', 'LY_MgEur', 'LY_Mg%']:
-            if c not in ly.columns:
-                ly[c] = 0
-        ly = ly[['BrandKey', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']]
-        base = base.drop(columns=['LY_Rev', 'LY_MgEur', 'LY_Mg%'], errors='ignore').merge(ly, on='BrandKey', how='left')
+    if cfg["BrandKey"].duplicated().any():
+        dup = cfg.loc[cfg["BrandKey"].duplicated(), "Brand"].tolist()
+        raise ValueError(f"CSV inválido: marcas duplicadas {dup}")
 
-    if not df_budget.empty:
-        budget = df_budget.copy()
-        budget.columns = [str(c).strip() for c in budget.columns]
-        budget = safe_rename_first_cols(budget, {0: 'Marca'})
-        if 'Marca' not in budget.columns:
-            _warn_data_issue("Budget sheet missing required column ['Marca']; defaulting budget metrics to 0.")
-            budget['Marca'] = ''
+    missing_brands = sorted(expected_brand_keys - set(cfg["BrandKey"]))
+    if missing_brands:
+        raise ValueError(f"CSV incompleto: faltan {len(missing_brands)} marcas del master list")
 
-        month_cols = [
-            c for c in [
-                'Venta Enero', 'Venta Febrero', 'Venta Marzo', 'Venta Abril',
-                'Venta Mayo', 'Venta Junio', 'Venta Julio', 'Venta Agosto',
-                'Venta Septiembre', 'Venta Octubre', 'Venta Noviembre', 'Venta Diciembre'
-            ] if c in budget.columns
-        ]
-        if month_cols:
-            budget['Budget_Rev'] = budget[month_cols].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1)
+    extra_brands = sorted(set(cfg["BrandKey"]) - expected_brand_keys)
+    if extra_brands:
+        raise ValueError(f"CSV inválido: hay marcas no reconocidas ({len(extra_brands)})")
 
-        if 'Budget_Rev' not in budget.columns:
-            budget['Budget_Rev'] = 0
-
-        mg_pct_col = next(
-            (c for c in budget.columns if 'budget' in _normalize_col(c) and ('mg%' in _normalize_col(c) or 'margen' in _normalize_col(c))),
-            None
-        )
-        mg_eur_col = next(
-            (c for c in budget.columns if 'budget' in _normalize_col(c) and ('mgeur' in _normalize_col(c) or 'mg_eur' in _normalize_col(c))),
-            None
-        )
-
-        budget['Budget_Rev'] = pd.to_numeric(budget['Budget_Rev'], errors='coerce').fillna(0)
-        if mg_pct_col:
-            budget['Budget_Mg%'] = pd.to_numeric(budget[mg_pct_col], errors='coerce').fillna(0)
-        if mg_eur_col:
-            budget['Budget_MgEur'] = pd.to_numeric(budget[mg_eur_col], errors='coerce').fillna(0)
-
-        if 'Budget_MgEur' not in budget.columns:
-            budget_mg_pct = budget['Budget_Mg%'] if 'Budget_Mg%' in budget.columns else pd.Series(0, index=budget.index)
-            budget['Budget_MgEur'] = budget['Budget_Rev'] * pd.to_numeric(budget_mg_pct, errors='coerce').fillna(0)
-        if 'Budget_Mg%' not in budget.columns:
-            budget['Budget_Mg%'] = np.where(
-                budget['Budget_Rev'] != 0,
-                budget['Budget_MgEur'] / budget['Budget_Rev'],
-                0,
-            )
-
-        budget['BrandKey'] = budget['Marca'].apply(_normalize_brand)
-        budget = budget.groupby('BrandKey', as_index=False)[['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur']].sum()
-        budget['Budget_Mg%'] = np.where(
-            budget['Budget_Rev'] != 0,
-            budget['Budget_MgEur'] / budget['Budget_Rev'],
-            0,
-        )
-
-        base = base.drop(columns=['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur'], errors='ignore').merge(
-            budget, on='BrandKey', how='left'
-        )
-
-    for c in ['Stock', 'Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
-        base[c] = pd.to_numeric(base[c], errors='coerce').fillna(0)
-
-    agg_names = {'TOTAL', '2 WHEELS', 'FREE TIME', 'OUTDOOR TECH', 'VARIOS'}
-    base = base[~base['BrandKey'].isin({_normalize_brand(v) for v in agg_names})].copy()
-
-    base = base.drop(columns=['BrandKey'], errors='ignore')
-
-    aggs = []
-    for v in ['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH', 'VARIOS']:
-        sub = base[base['Vertical'].astype(str).str.upper() == v]
-        if len(sub) == 0:
-            continue
-        aggs.append({
-            'Marca': v,
-            'Vertical': v,
-            'Stock': sub['Stock'].sum(),
-            'Budget_Rev': sub['Budget_Rev'].sum(),
-            'Budget_Mg%': (sub['Budget_MgEur'].sum() / sub['Budget_Rev'].sum()) if sub['Budget_Rev'].sum() else 0,
-            'Budget_MgEur': sub['Budget_MgEur'].sum(),
-            'LY_Rev': sub['LY_Rev'].sum(),
-            'LY_MgEur': sub['LY_MgEur'].sum(),
-            'LY_Mg%': (sub['LY_MgEur'].sum() / sub['LY_Rev'].sum()) if sub['LY_Rev'].sum() else 0,
-        })
-
-    total = {
-        'Marca': 'TOTAL',
-        'Vertical': 'TOTAL',
-        'Stock': base['Stock'].sum(),
-        'Budget_Rev': base['Budget_Rev'].sum(),
-        'Budget_Mg%': (base['Budget_MgEur'].sum() / base['Budget_Rev'].sum()) if base['Budget_Rev'].sum() else 0,
-        'Budget_MgEur': base['Budget_MgEur'].sum(),
-        'LY_Rev': base['LY_Rev'].sum(),
-        'LY_MgEur': base['LY_MgEur'].sum(),
-        'LY_Mg%': (base['LY_MgEur'].sum() / base['LY_Rev'].sum()) if base['LY_Rev'].sum() else 0,
-    }
-
-    summary_rows = pd.DataFrame(aggs + [total])
-    return base, summary_rows
+    return cfg
 
 
-def load_data_from_firebase():
-    df_ventas = load_df_from_firebase('datasets/mensual_ventas')
-    df_stock = load_df_from_firebase('datasets/mensual_stock')
-    df_margin_ly = load_df_from_firebase('datasets/anual_margin_ly')
-    df_budget_raw = load_df_from_firebase('datasets/anual_budget')
-    df_estado = load_df_from_firebase('datasets/anual_estado_marcas')
-    df_familias = load_df_from_firebase('datasets/anual_familias')
+def build_brand_config(master_df: pd.DataFrame, saved_cfg: pd.DataFrame) -> pd.DataFrame:
+    cfg = master_df.copy()
+    cfg["Short Name"] = cfg["Brand"].apply(_auto_short_name)
+    cfg["Status"] = "STANDARD"
+    cfg["Family"] = "UNCLASSIFIED"
+    cfg["Annual Budget"] = 0.0
+    cfg["Expected Margin %"] = 0.0
+    for c in MONTH_BUDGET_COLS:
+        cfg[c] = np.nan
 
-    datasets_to_validate = [
-        ('ventas', 'INPUT (Mensual) Ventas', df_ventas),
-        ('stock', 'INPUT (Mensual) Stock', df_stock),
-        ('margin_ly', 'INPUT (Anual) MARGIN LY', df_margin_ly),
-        ('budget', 'INPUT (Anual) Budget', df_budget_raw),
-        ('estado_marcas', 'INPUT (Anual) Estado Marcas', df_estado),
-        ('familias', 'INPUT (Anual) Familias', df_familias),
-    ]
+    if not saved_cfg.empty:
+        temp = saved_cfg.copy()
+        if "BrandKey" not in temp.columns and "Brand" in temp.columns:
+            temp["BrandKey"] = temp["Brand"].apply(_normalize_brand)
+        cfg = cfg.merge(temp.drop_duplicates("BrandKey"), on="BrandKey", how="left", suffixes=("", "_saved"))
+        for col in ["Brand", "Short Name", "Status", "Family", "Annual Budget", "Expected Margin %", *MONTH_BUDGET_COLS]:
+            saved_col = f"{col}_saved"
+            if saved_col in cfg.columns:
+                cfg[col] = cfg[saved_col].combine_first(cfg[col])
+        cfg = cfg[["Brand", "BrandKey", "Short Name", "Status", "Family", "Annual Budget", "Expected Margin %", *MONTH_BUDGET_COLS]]
 
-    for dataset_key, dataset_name, df in datasets_to_validate:
-        if df.empty:
-            continue
-        try:
-            validate_dataset(df, dataset_key, dataset_name)
-        except ValueError as e:
-            st.error(str(e))
-            return None
+    for c in ["Annual Budget", "Expected Margin %", *MONTH_BUDGET_COLS]:
+        cfg[c] = pd.to_numeric(cfg[c], errors="coerce")
 
-    if df_ventas.empty or df_familias.empty:
-        return None
+    monthly_sum = cfg[MONTH_BUDGET_COLS].fillna(0).sum(axis=1)
+    cfg["Annual Budget"] = np.where(cfg["Annual Budget"].fillna(0) > 0, cfg["Annual Budget"], monthly_sum)
+    needs_spread = monthly_sum == 0
+    for col in MONTH_BUDGET_COLS:
+        cfg[col] = np.where(needs_spread, cfg["Annual Budget"].fillna(0) / 12, cfg[col].fillna(0))
 
-    if 'Margen_Euros' not in df_ventas.columns and {'Importe Neto', 'CR3: % Margen s/Venta'}.issubset(df_ventas.columns):
-        df_ventas['Margen_Euros'] = df_ventas['Importe Neto'] * df_ventas['CR3: % Margen s/Venta'] / 100
+    cfg["Expected Margin %"] = cfg["Expected Margin %"].fillna(0) / np.where(cfg["Expected Margin %"] > 1, 100, 1)
+    cfg["Status"] = cfg["Status"].where(cfg["Status"].isin(STATUS_OPTIONS), "STANDARD")
+    cfg["Family"] = cfg["Family"].where(cfg["Family"].isin(FAMILY_OPTIONS), "UNCLASSIFIED")
+    return cfg
 
-    df_ventas_full = df_ventas.merge(
-        df_familias[['Nombre', 'Familia', 'Columna1']],
-        left_on='Clave 1', right_on='Familia', how='left'
+
+def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
+    sales = df_sales.copy()
+    sales["BrandKey"] = sales["Nombre"].apply(_normalize_brand)
+
+    sales_ytd = sales[sales["Mes Factura"] <= current_month].copy()
+    grouped = sales_ytd.groupby("BrandKey", as_index=False).agg(
+        Revenue_YTD=("Importe Neto", "sum"), Margin_EUR_YTD=("Margen_Euros", "sum")
     )
+    grouped["Margin_PCT_YTD"] = np.where(grouped["Revenue_YTD"] != 0, grouped["Margin_EUR_YTD"] / grouped["Revenue_YTD"], 0)
+    grouped["Revenue_Projected"] = grouped["Revenue_YTD"] / max(current_month, 1) * 12
 
-    brand_monthly = df_ventas_full.groupby(['Nombre', 'Mes Factura']).agg(
-        Revenue=('Importe Neto', 'sum'), Margen_Euros=('Margen_Euros', 'sum')
-    ).reset_index()
-    brand_monthly['Margen_Pct'] = np.where(
-        brand_monthly['Revenue'] != 0,
-        brand_monthly['Margen_Euros'] / brand_monthly['Revenue'],
-        0
-    )
+    stock = df_stock.copy()
+    stock["BrandKey"] = stock["Marca"].apply(_normalize_brand)
+    stock = stock.groupby("BrandKey", as_index=False)["Stock"].sum()
 
-    vertical_monthly = df_ventas_full.groupby(['Columna1', 'Mes Factura']).agg(
-        Revenue=('Importe Neto', 'sum'), Margen_Euros=('Margen_Euros', 'sum')
-    ).reset_index()
-    vertical_monthly['Margen_Pct'] = np.where(
-        vertical_monthly['Revenue'] != 0,
-        vertical_monthly['Margen_Euros'] / vertical_monthly['Revenue'],
-        0
-    )
+    ly = df_margin_ly.copy()
+    ly["BrandKey"] = ly["Marca"].apply(_normalize_brand)
+    ly = ly.groupby("BrandKey", as_index=False).agg(LY_Rev=("LY_Rev", "sum"), LY_MgEur=("LY_MgEur", "sum"), LY_Mg_pct=("LY_Mg%", "mean"))
 
-    month_budget_cols = {
-        1:'Venta Enero',2:'Venta Febrero',3:'Venta Marzo',4:'Venta Abril',
-        5:'Venta Mayo',6:'Venta Junio',7:'Venta Julio',8:'Venta Agosto',
-        9:'Venta Septiembre',10:'Venta Octubre',11:'Venta Noviembre',12:'Venta Diciembre'
-    }
-    budget_monthly = {}
-    for m, col in month_budget_cols.items():
-        budget_monthly[m] = pd.to_numeric(df_budget_raw[col], errors='coerce').fillna(0).sum() if col in df_budget_raw.columns else 0
+    model = brand_cfg.merge(grouped, on="BrandKey", how="left").merge(stock, on="BrandKey", how="left").merge(ly, on="BrandKey", how="left")
+    for c in ["Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Revenue_Projected", "Stock", "LY_Rev", "LY_MgEur", "LY_Mg_pct"]:
+        model[c] = pd.to_numeric(model[c], errors="coerce").fillna(0)
 
-    df_margins_detail, df_margins_summary = build_margins_table(df_estado, df_stock, df_margin_ly, df_budget_raw)
+    model["Budget_YTD"] = model[MONTH_BUDGET_COLS[:current_month]].sum(axis=1)
+    model["Budget_Month"] = model[MONTH_BUDGET_COLS[current_month - 1]]
+    model["Budget_vs_Actual"] = model["Revenue_YTD"] - model["Budget_YTD"]
+    return model
 
-    return {
-        'ventas': df_ventas,
-        'ventas_full': df_ventas_full,
-        'familias': df_familias,
-        'budget_raw': df_budget_raw,
-        'margins_detail': df_margins_detail,
-        'margins_summary': df_margins_summary,
-        'brand_monthly': brand_monthly,
-        'vertical_monthly': vertical_monthly,
-        'budget_monthly': budget_monthly,
-    }
 
-# ── Chart helpers ───────────────────────────────────────────────────────────────
-CHART_LAYOUT = dict(
-    paper_bgcolor='rgba(0,0,0,0)',
-    plot_bgcolor='rgba(0,0,0,0)',
-    font_family='Syne',
-    font_color='#d4dbe8',
-    margin=dict(l=0, r=0, t=32, b=0),
-)
+def fmt_eur(v):
+    return f"€{v:,.0f}"
 
-DEFAULT_LEGEND = dict(
-    bgcolor='rgba(26,31,43,0.8)',
-    bordercolor='#252d3d',
-    borderwidth=1,
-    font_size=11,
-)
-
-VERTICAL_COLORS = {
-    '2 WHEELS':    '#7eb8ff',
-    'FREE TIME':   '#5de85d',
-    'OUTDOOR TECH':'#e87de8',
-    'VARIOS':      '#f5a623',
-    'TOTAL':       '#e8ff00',
-    '—':           '#8896ab',
-}
-
-def fmt_eur(v, decimals=0):
-    if abs(v) >= 1_000_000:
-        return f"€{v/1_000_000:.1f}M"
-    elif abs(v) >= 1_000:
-        return f"€{v/1_000:.0f}K"
-    return f"€{v:,.{decimals}f}"
 
 def fmt_pct(v):
-    return f"{v*100:.1f}%"
-
-def metric_card(label, value, delta=None, delta_label="vs LY"):
-    delta_html = ""
-    if delta is not None:
-        if isinstance(delta, float) and abs(delta) < 10:
-            dval = f"{delta*100:+.1f}pp" if "%" in delta_label else f"{delta:+.1f}%"
-        else:
-            dval = fmt_eur(delta) if delta > 100 else f"{delta:+.0f}"
-        cls = "delta-up" if (delta if isinstance(delta, (int,float)) else 0) >= 0 else "delta-down"
-        delta_html = f'<div class="metric-delta {cls}">{dval} {delta_label}</div>'
-    return f"""
-    <div class="metric-card">
-        <div class="metric-label">{label}</div>
-        <div class="metric-value">{value}</div>
-        {delta_html}
-    </div>"""
+    return f"{v * 100:.1f}%"
 
 
-# ── Sidebar ─────────────────────────────────────────────────────────────────────
 firebase_ok, firebase_msg = init_firebase()
 
 with st.sidebar:
-    st.markdown("### 🏍️ **Sportech IB**")
-    st.markdown('<div style="color:#5a6378;font-size:11px;margin-bottom:20px;">Monthly Performance Dashboard</div>', unsafe_allow_html=True)
-
+    st.markdown("### 🏍️ Sportech IB")
+    st.caption("Nueva arquitectura: 3 inputs + configuración dinámica de marcas")
     if firebase_ok:
-        st.success("Firebase conectado")
+        st.success(firebase_msg)
     else:
         st.error(firebase_msg)
 
-    st.markdown("#### 📤 Carga mensual/anual (Excel)")
-    up_ventas = st.file_uploader("INPUT (Mensual) Ventas", type=["xlsx"], key='u_ventas')
-    up_stock = st.file_uploader("INPUT (Mensual) Stock", type=["xlsx"], key='u_stock')
-    up_margin_ly = st.file_uploader("INPUT (Anual) MARGIN LY", type=["xlsx"], key='u_margin')
+    up_sales = st.file_uploader("INPUT (Monthly) Sales", type=["xlsx"], key="sales")
+    up_stock = st.file_uploader("INPUT (Monthly) Stock", type=["xlsx"], key="stock")
+    up_margin = st.file_uploader("INPUT (Annual) MARGIN LY", type=["xlsx"], key="margin")
 
-    if st.button("Guardar Excel en Firebase", width='stretch', disabled=not firebase_ok):
+    if st.button("Guardar INPUTS en Firebase", disabled=not firebase_ok, use_container_width=True):
         try:
-            if up_ventas is not None:
-                ventas_df = read_sheet(up_ventas, 'INPUT (Mensual) Ventas')
-                save_df_to_firebase(
-                    'datasets/mensual_ventas',
-                    validate_dataset(ventas_df, 'ventas', 'INPUT (Mensual) Ventas')
-                )
-            if up_stock is not None:
-                stock_df = read_sheet(up_stock, 'INPUT (Mensual) Stock')
-                save_df_to_firebase(
-                    'datasets/mensual_stock',
-                    validate_dataset(stock_df, 'stock', 'INPUT (Mensual) Stock')
-                )
-            if up_margin_ly is not None:
-                margin_ly_df = read_sheet(up_margin_ly, 'INPUT (Anual) MARGIN LY')
-                save_df_to_firebase(
-                    'datasets/anual_margin_ly',
-                    validate_dataset(margin_ly_df, 'margin_ly', 'INPUT (Anual) MARGIN LY')
-                )
-            st.success('Datos de Excel guardados correctamente.')
+            if up_sales:
+                save_df_to_firebase("datasets/monthly_sales", validate_dataset(read_sheet(up_sales, "INPUT (Monthly) Sales"), "sales", "INPUT (Monthly) Sales"))
+            if up_stock:
+                save_df_to_firebase("datasets/monthly_stock", validate_dataset(read_sheet(up_stock, "INPUT (Monthly) Stock"), "stock", "INPUT (Monthly) Stock"))
+            if up_margin:
+                save_df_to_firebase("datasets/annual_margin_ly", validate_dataset(read_sheet(up_margin, "INPUT (Annual) MARGIN LY"), "margin_ly", "INPUT (Annual) MARGIN LY"))
+            st.success("INPUTS guardados")
         except Exception as e:
-            st.error(f'No se pudo guardar: {e}')
+            st.error(str(e))
 
-    st.markdown('---')
-    page = st.radio(
-        "Sección",
-        ["⚙️ Configuración de Datos", "📊 Overview · RECAP", "📈 MARGINS · Marcas", "🏍️ Vertical 2 Wheels",
-         "🌲 Vertical Free Time", "📡 Vertical Outdoor Tech"],
-        label_visibility="collapsed"
-    )
-    st.markdown("---")
-    st.markdown('<div style="color:#5a6378;font-size:10px;">Datos en Firebase Realtime Database</div>', unsafe_allow_html=True)
+sales_df = load_df_from_firebase("datasets/monthly_sales") if firebase_ok else pd.DataFrame()
+stock_df = load_df_from_firebase("datasets/monthly_stock") if firebase_ok else pd.DataFrame()
+margin_ly_df = load_df_from_firebase("datasets/annual_margin_ly") if firebase_ok else pd.DataFrame()
+saved_brand_cfg = load_df_from_firebase("datasets/brand_configuration") if firebase_ok else pd.DataFrame()
 
-# ── Configuración editable (Firebase) ─────────────────────────────────────────
-if page == "⚙️ Configuración de Datos":
-    st.title("⚙️ Configuración de datos anuales")
-    if not firebase_ok:
-        st.stop()
-
-    st.caption("Edita y guarda en Firebase: Budget, Estado Marcas y Familias.")
-
-    tabs = st.tabs(["INPUT (Anual) Budget", "INPUT (Anual) Estado Marcas", "INPUT (Anual) Familias"])
-    table_map = [
-        ('datasets/anual_budget', 'budget_editor', 'budget', 'INPUT (Anual) Budget'),
-        ('datasets/anual_estado_marcas', 'estado_editor', 'estado_marcas', 'INPUT (Anual) Estado Marcas'),
-        ('datasets/anual_familias', 'familias_editor', 'familias', 'INPUT (Anual) Familias'),
-    ]
-
-    for tab, (path, key, dataset_key, dataset_name) in zip(tabs, table_map):
-        with tab:
-            df = load_df_from_firebase(path)
-            edited = st.data_editor(df, num_rows='dynamic', width='stretch', key=key)
-            c1, c2 = st.columns([1, 3])
-            with c1:
-                if st.button("Guardar", key=f"save_{key}", width='stretch'):
-                    try:
-                        save_df_to_firebase(path, validate_dataset(edited, dataset_key, dataset_name))
-                        st.success("Guardado en Firebase")
-                    except ValueError as e:
-                        st.error(str(e))
-            with c2:
-                up = st.file_uploader("Cargar desde Excel (opcional)", type=['xlsx'], key=f"u_{key}")
-                if up is not None and st.button("Importar Excel", key=f"import_{key}"):
-                    name = {
-                        'datasets/anual_budget': 'INPUT (Anual) Budget',
-                        'datasets/anual_estado_marcas': 'INPUT (Anual) Estado Marcas',
-                        'datasets/anual_familias': 'INPUT (Anual) Familias',
-                    }[path]
-                    try:
-                        new_df = read_sheet(up, name)
-                        save_df_to_firebase(path, validate_dataset(new_df, dataset_key, dataset_name))
-                        st.success("Importado y guardado")
-                    except ValueError as e:
-                        st.error(str(e))
+if sales_df.empty or stock_df.empty or margin_ly_df.empty:
+    st.title("Sportech IB Dashboard")
+    st.info("Carga los 3 INPUTS requeridos para comenzar: Sales, Stock y MARGIN LY.")
     st.stop()
 
-# ── Load data ───────────────────────────────────────────────────────────────────
-if not firebase_ok:
-    st.error(firebase_msg)
+try:
+    sales_df = validate_dataset(sales_df, "sales", "INPUT (Monthly) Sales")
+    stock_df = validate_dataset(stock_df, "stock", "INPUT (Monthly) Stock")
+    margin_ly_df = validate_dataset(margin_ly_df, "margin_ly", "INPUT (Annual) MARGIN LY")
+except ValueError as e:
+    st.error(str(e))
     st.stop()
 
-data = load_data_from_firebase()
-if data is None:
-    st.markdown("""
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-                height:60vh;gap:16px;">
-        <div style="font-size:64px;">🏍️</div>
-        <div style="font-size:28px;font-weight:800;color:#e8ff00;">Sportech IB Dashboard</div>
-        <div style="color:#5a6378;font-size:14px;">Sube <strong>INPUT (Mensual) Ventas</strong> y configura <strong>INPUT (Anual) Familias</strong> para comenzar.</div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
+brand_master = extract_brand_master(sales_df, stock_df, margin_ly_df)
+brand_cfg = build_brand_config(brand_master, saved_brand_cfg)
 
-df_margins      = data['margins_detail']
-df_margins_sum  = data['margins_summary']
-brand_monthly   = data['brand_monthly']
-vert_monthly    = data['vertical_monthly']
-budget_monthly  = data['budget_monthly']
-df_ventas       = data['ventas']
-df_ventas_full  = data['ventas_full']
-df_budget_raw   = data['budget_raw']
+st.sidebar.markdown("---")
+available_months = sorted(sales_df["Mes Factura"].dropna().astype(int).unique().tolist())
+current_month = st.sidebar.selectbox("Current Month", options=available_months, index=len(available_months) - 1)
+section = st.sidebar.radio("Section", ["Brand Config", "Overview", "Margin", "Vertical · 2 WHEELS", "Vertical · FREE TIME", "Vertical · OUTDOOR TECH"])
 
-# Computed totals for current month
-MONTHS_ES = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',
-             7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
+if section == "Brand Config":
+    st.title("⚙️ Brand Master & Financial Configuration")
+    st.write("Lista única de marcas generada automáticamente a partir de los 3 INPUTS.")
 
+    with st.expander("CSV upload: estructura requerida", expanded=True):
+        st.markdown(
+            "- **Columnas obligatorias**: `Brand`, `Short Name`, `Status`, `Family`, `Annual Budget`, `Expected Margin %`.\n"
+            "- **Columnas opcionales**: `Budget Enero` ... `Budget Diciembre`.\n"
+            "- **Status válidos**: NEW, STANDARD, PHASE OUT.\n"
+            "- **Family válidas**: 2 WHEELS, FREE TIME, OUTDOOR TECH, UNCLASSIFIED.\n"
+            "- **Validaciones**: marcas duplicadas, marcas faltantes, marcas extra no existentes, tipos numéricos inválidos.\n"
+            "- **Errores**: se muestran con detalle y no se persiste el CSV hasta corregir."
+        )
+        sample = brand_cfg[["Brand", "Short Name", "Status", "Family", "Annual Budget", "Expected Margin %", *MONTH_BUDGET_COLS]].head(3)
+        st.dataframe(sample, use_container_width=True)
 
-def period_label(month_num: int, year: int | None) -> str:
-    m = MONTHS_ES.get(month_num, str(month_num))
-    return f"{m} {year}" if year else m
+    csv_up = st.file_uploader("Upload brand configuration CSV", type=["csv"], key="cfg_csv")
+    if csv_up is not None:
+        try:
+            incoming = pd.read_csv(csv_up)
+            valid_cfg = validate_brand_config_csv(incoming, set(brand_cfg["BrandKey"]))
+            save_df_to_firebase("datasets/brand_configuration", valid_cfg)
+            st.success("CSV validado y guardado.")
+            st.rerun()
+        except Exception as e:
+            st.error(str(e))
 
-
-def infer_reporting_year(df_ventas_data: pd.DataFrame) -> int | None:
-    year_candidates = ['Año', 'Anio', 'Year', 'Ejercicio', 'Año Factura', 'Anio Factura']
-    for col in year_candidates:
-        if col in df_ventas_data.columns:
-            years = pd.to_numeric(df_ventas_data[col], errors='coerce').dropna()
-            years = years[(years >= 2000) & (years <= 2100)]
-            if not years.empty:
-                return int(years.mode().iloc[0])
-
-    date_candidates = ['Fecha', 'Fecha Factura', 'Fecha Documento', 'Date']
-    for col in date_candidates:
-        if col in df_ventas_data.columns:
-            parsed = pd.to_datetime(df_ventas_data[col], errors='coerce', dayfirst=True)
-            parsed = parsed.dropna()
-            if not parsed.empty:
-                return int(parsed.dt.year.mode().iloc[0])
-
-    configured_year = st.secrets.get('reporting_year')
-    if configured_year is not None:
-        configured_year = pd.to_numeric(pd.Series([configured_year]), errors='coerce').iloc[0]
-        if pd.notna(configured_year):
-            return int(configured_year)
-
-    return None
-
-
-def contextual_label(prefix: str, month_num: int | None, year: int | None, neutral: str = 'Periodo seleccionado') -> str:
-    if month_num:
-        return f"{prefix} {period_label(month_num, year)}"
-    if year:
-        return f"{prefix} {year}"
-    return f"{prefix} {neutral}"
-
-avail_months = sorted(brand_monthly['Mes Factura'].unique())
-current_month = avail_months[-1] if avail_months else 1
-current_month_name = MONTHS_ES.get(current_month, str(current_month))
-reporting_year = infer_reporting_year(df_ventas)
-overview_period = period_label(current_month, reporting_year)
-period_suffix = str(reporting_year) if reporting_year else 'Año actual'
-
-total_rev   = df_ventas_full['Importe Neto'].sum()
-total_mg_eur= df_ventas_full['Margen_Euros'].sum()
-total_mg_pct= total_mg_eur / total_rev if total_rev else 0
-total_stock = df_margins['Stock'].sum()
-budget_enero= budget_monthly.get(1, 0)
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-# PAGE 1: OVERVIEW · RECAP
-# ════════════════════════════════════════════════════════════════════════════════
-if page == "📊 Overview · RECAP":
-
-    safe_current_month_name = escape(current_month_name)
-    st.markdown(f"""
-    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
-        <h1 style="margin:0;font-size:32px;">RECAP</h1>
-        <span style="color:#5a6378;font-size:14px;">Resumen Global · {overview_period if reporting_year else 'Periodo seleccionado'}</span>
-    </div>""", unsafe_allow_html=True)
-
-    # ── KPI row ──
-    c1, c2, c3, c4, c5 = st.columns(5)
-    ly_total = df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'LY_Rev'].values
-    ly_rev   = ly_total[0] if len(ly_total) > 0 else 0
-    ly_mg    = df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'LY_MgEur'].values
-    ly_mg_eur= ly_mg[0] if len(ly_mg) > 0 else 0
-    ly_mg_pct= ly_mg_eur / ly_rev if ly_rev else 0
-    budget_tot= df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'Budget_Rev'].values
-    budget_rev= float(budget_tot[0]) if len(budget_tot) > 0 else 0
-
-    with c1:
-        st.metric(contextual_label("Revenue", current_month, reporting_year), fmt_eur(total_rev),
-                  f"{(total_rev/ly_rev*12 - 1)*100:+.1f}% vs LY (anualiz.)" if ly_rev else "—")
-    with c2:
-        st.metric("Margen €", fmt_eur(total_mg_eur),
-                  f"{(total_mg_pct - ly_mg_pct)*100:+.1f}pp vs LY" if ly_rev else "—")
-    with c3:
-        st.metric("Margen %", fmt_pct(total_mg_pct),
-                  f"Budget: {fmt_pct(df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL', 'Budget_Mg%'].values[0] if len(df_margins_sum.loc[df_margins_sum['Marca'] == 'TOTAL']) else 0)}")
-    with c4:
-        st.metric("Stock", fmt_eur(total_stock))
-    with c5:
-        bud_ene = budget_monthly.get(1, 0)
-        cumpl = total_rev / bud_ene if bud_ene else 0
-        st.metric("Cumpl. Budget", fmt_pct(cumpl),
-                  f"Budget: {fmt_eur(bud_ene)}")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Revenue by vertical (bar) + Margin % (scatter) ──
-    col_left, col_right = st.columns([3, 2])
-
-    with col_left:
-        st.markdown('<div class="section-header">Revenue por Vertical</div>', unsafe_allow_html=True)
-
-        verticals_summary = vert_monthly.groupby('Columna1').agg(
-            Revenue=('Revenue','sum'), Margen_Euros=('Margen_Euros','sum')
-        ).reset_index().dropna()
-        verticals_summary['Margen_Pct'] = verticals_summary['Margen_Euros'] / verticals_summary['Revenue']
-
-        # Add budget per vertical using margins data
-        v_budget = df_margins_sum[df_margins_sum['Marca'].isin(['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH'])][['Marca', 'Budget_Rev']].copy()
-        v_budget.columns = ['Columna1','Budget']
-        v_budget['Columna1'] = v_budget['Columna1'].str.upper().str.strip()
-        verticals_summary['Columna1_upper'] = verticals_summary['Columna1'].str.upper().str.strip()
-
-        fig = go.Figure()
-        for _, row in verticals_summary.iterrows():
-            vname = str(row['Columna1'])
-            safe_vname = escape(vname)
-            color = VERTICAL_COLORS.get(vname.upper(), '#7eb8ff')
-            bud_match = v_budget[v_budget['Columna1']==vname.upper()]
-            bud_val = float(bud_match['Budget'].iloc[0]) if len(bud_match) else 0
-            monthly_budget = bud_val / 12
-
-            fig.add_trace(go.Bar(
-                name=vname,
-                x=[vname],
-                y=[row['Revenue']],
-                marker_color=color,
-                marker_line_width=0,
-                text=[fmt_eur(row['Revenue'])],
-                textposition='outside',
-                textfont=dict(size=11, color=color),
-                hovertemplate=f"<b>{safe_vname}</b><br>Revenue: €%{{y:,.0f}}<br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
-            ))
-            if monthly_budget > 0:
-                fig.add_shape(type='line',
-                    x0=-0.4+list(verticals_summary['Columna1']).index(vname),
-                    x1=0.4+list(verticals_summary['Columna1']).index(vname),
-                    y0=monthly_budget, y1=monthly_budget,
-                    line=dict(color='#e8ff00', width=2, dash='dot'),
-                )
-
-        fig.update_layout(**CHART_LAYOUT, height=320, showlegend=False,
-                          yaxis_title=None, xaxis_title=None,
-                          bargap=0.3)
-        fig.add_annotation(x=0.98, y=0.96, xref='paper', yref='paper',
-                           text="— Budget mensual", font=dict(size=10, color='#e8ff00'),
-                           showarrow=False, align='right')
-        st.plotly_chart(fig, width='stretch')
-
-    with col_right:
-        st.markdown('<div class="section-header">Margen % por Vertical</div>', unsafe_allow_html=True)
-
-        fig2 = go.Figure()
-        for _, row in verticals_summary.iterrows():
-            vname = str(row['Columna1'])
-            safe_vname = escape(vname)
-            color = VERTICAL_COLORS.get(vname.upper(), '#7eb8ff')
-            fig2.add_trace(go.Bar(
-                name=vname,
-                x=[fmt_pct(row['Margen_Pct'])],
-                y=[vname],
-                orientation='h',
-                marker_color=color,
-                marker_line_width=0,
-                text=[fmt_pct(row['Margen_Pct'])],
-                textposition='outside',
-                textfont=dict(size=11, color=color),
-                hovertemplate=f"<b>{safe_vname}</b><br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
-            ))
-
-        fig2.update_layout(**CHART_LAYOUT, height=320, showlegend=False, bargap=0.35)
-        fig2.update_xaxes(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d')
-        fig2.update_yaxes(gridcolor='#252d3d', linecolor='#252d3d')
-        st.plotly_chart(fig2, width='stretch')
-
-    # ── Budget evolution ──
-    st.markdown(f'<div class="section-header">Budget Mensual {period_suffix} — Distribución</div>', unsafe_allow_html=True)
-    months_list = list(MONTHS_ES.values())
-    budget_vals = [budget_monthly.get(m, 0) for m in range(1, 13)]
-    cum_budget  = np.cumsum(budget_vals)
-
-    fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-    fig3.add_trace(go.Bar(
-        x=months_list, y=budget_vals,
-        marker_color='#252d3d',
-        marker_line_color='#3d4b63', marker_line_width=1,
-        name='Budget Mensual',
-        hovertemplate='%{x}: €%{y:,.0f}<extra></extra>',
-    ), secondary_y=False)
-    # Mark enero actual
-    fig3.add_trace(go.Bar(
-        x=[months_list[current_month-1]],
-        y=[total_rev],
-        marker_color='#e8ff00',
-        name='Ventas Real',
-        hovertemplate='Real: €%{y:,.0f}<extra></extra>',
-    ), secondary_y=False)
-    fig3.add_trace(go.Scatter(
-        x=months_list, y=cum_budget,
-        mode='lines+markers',
-        line=dict(color='#00e5ff', width=2),
-        marker=dict(size=5, color='#00e5ff'),
-        name='Acum. Budget',
-        hovertemplate='%{x} Acum: €%{y:,.0f}<extra></extra>',
-    ), secondary_y=True)
-
-    fig3.update_layout(**CHART_LAYOUT, height=280, bargap=0.15,
-                       legend={**DEFAULT_LEGEND, 'orientation':'h', 'y':1.1, 'x':0})
-    fig3.update_yaxes(gridcolor='#252d3d', linecolor='#252d3d', secondary_y=False)
-    fig3.update_yaxes(gridcolor='rgba(0,0,0,0)', linecolor='#252d3d', secondary_y=True)
-    st.plotly_chart(fig3, width='stretch')
-
-    # ── Top brands table ──
-    st.markdown(f'<div class="section-header">Top Marcas · {overview_period if reporting_year else "Periodo seleccionado"}</div>', unsafe_allow_html=True)
-    top_brands = brand_monthly[brand_monthly['Mes Factura']==current_month].copy()
-    top_brands = top_brands[top_brands['Nombre'].notna() & (top_brands['Nombre'] != '0 - SIN CLASIFICAR')]
-    top_brands = top_brands.sort_values('Revenue', ascending=False).head(15)
-
-    # Merge vertical info
-    top_brands = top_brands.merge(
-        data['familias'][['Nombre','Columna1']].drop_duplicates(),
-        on='Nombre', how='left'
-    )
-
-    top_brands_show = top_brands.copy()
-    top_brands_show['Nombre'] = top_brands_show['Nombre'].apply(lambda v: escape(str(v or '')))
-    top_brands_show['Columna1'] = top_brands_show['Columna1'].apply(
-        lambda v: escape(str(v or '—').strip().upper())
-    )
-    top_brands_show['Share'] = np.where(
-        total_rev > 0,
-        top_brands_show['Revenue'] / total_rev,
-        0,
-    )
-
-    st.dataframe(
-        top_brands_show[['Nombre', 'Columna1', 'Revenue', 'Margen_Euros', 'Margen_Pct', 'Share']],
-        width='stretch',
-        hide_index=True,
+    edited = st.data_editor(
+        brand_cfg[["Brand", "Short Name", "Status", "Family", "Annual Budget", "Expected Margin %", *MONTH_BUDGET_COLS]],
+        use_container_width=True,
+        num_rows="fixed",
         column_config={
-            'Nombre': 'Marca',
-            'Columna1': 'Vertical',
-            'Revenue': st.column_config.NumberColumn('Revenue', format='€%.0f'),
-            'Margen_Euros': st.column_config.NumberColumn('Margen €', format='€%.0f'),
-            'Margen_Pct': st.column_config.NumberColumn('Mg%', format='%.1f%%'),
-            'Share': st.column_config.ProgressColumn('Share', format='%.1f%%', min_value=0.0, max_value=1.0),
+            "Status": st.column_config.SelectboxColumn(options=STATUS_OPTIONS),
+            "Family": st.column_config.SelectboxColumn(options=FAMILY_OPTIONS),
         },
     )
+    if st.button("Guardar configuración", use_container_width=True):
+        out = edited.copy()
+        out["BrandKey"] = out["Brand"].apply(_normalize_brand)
+        save_df_to_firebase("datasets/brand_configuration", out)
+        st.success("Configuración guardada")
 
+    st.stop()
 
-# ════════════════════════════════════════════════════════════════════════════════
-# PAGE 2: MARGINS
-# ════════════════════════════════════════════════════════════════════════════════
-elif page == "📈 MARGINS · Marcas":
+model = prepare_model(sales_df, stock_df, margin_ly_df, brand_cfg, current_month)
 
-    st.markdown(f"""
-    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
-        <h1 style="margin:0;font-size:32px;">MARGINS</h1>
-        <span style="color:#5a6378;font-size:14px;">Detalle por Marca · Datos {period_suffix if reporting_year else 'Año actual'}</span>
-    </div>""", unsafe_allow_html=True)
+if section == "Overview":
+    st.title(f"📊 Overview · {MONTHS_ES[current_month]}")
+    total_rev = model["Revenue_YTD"].sum()
+    total_mg = model["Margin_EUR_YTD"].sum()
+    total_budget = model["Budget_YTD"].sum()
 
-    # Filter controls
-    fc1, fc2 = st.columns([2, 1])
-    with fc1:
-        vertical_filter = st.multiselect(
-            "Filtrar por Vertical",
-            options=['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH', 'VARIOS'],
-            default=['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH'],
-        )
-    with fc2:
-        sort_by = st.selectbox("Ordenar por", ["Budget Revenue", "Stock", "LY Revenue", "Margen% Budget"])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Revenue YTD", fmt_eur(total_rev))
+    c2.metric("Margin € YTD", fmt_eur(total_mg))
+    c3.metric("Margin % YTD", fmt_pct(total_mg / total_rev if total_rev else 0))
+    c4.metric("Budget Attainment", fmt_pct(total_rev / total_budget if total_budget else 0))
 
-    df_fil = df_margins[
-        df_margins['Vertical'].isin(vertical_filter) &
-        ~df_margins['Marca'].isin(['SIN CLASIFICAR', 'NUEVAS MARCAS', '0 - SIN CLASIFICAR', '—'])
-    ].copy()
+    vert = model.groupby("Family", as_index=False).agg(Revenue=("Revenue_YTD", "sum"), Margin=("Margin_EUR_YTD", "sum"))
+    fig = px.bar(vert, x="Family", y="Revenue", color="Family", title="Revenue YTD por Vertical")
+    st.plotly_chart(fig, use_container_width=True)
 
-    sort_map = {"Budget Revenue":"Budget_Rev","Stock":"Stock","LY Revenue":"LY_Rev","Margen% Budget":"Budget_Mg%"}
-    df_fil = df_fil.sort_values(sort_map[sort_by], ascending=False)
+elif section == "Margin":
+    st.title(f"📈 Margin · {MONTHS_ES[current_month]}")
+    table = model[["Brand", "Short Name", "Status", "Family", "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Expected Margin %", "Stock", "LY_Rev", "LY_MgEur"]].copy()
+    st.dataframe(table, use_container_width=True)
 
-    # KPIs
-    k1, k2, k3, k4 = st.columns(4)
-    with k1: st.metric("Marcas activas", len(df_fil[df_fil['Budget_Rev'] > 0]))
-    with k2: st.metric("Budget total", fmt_eur(df_fil['Budget_Rev'].sum()))
-    with k3: st.metric("Stock total", fmt_eur(df_fil['Stock'].sum()))
-    with k4: st.metric("Revenue LY total", fmt_eur(df_fil['LY_Rev'].sum()))
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Scatter: Budget vs LY ──
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown('<div class="section-header">Budget vs Revenue LY por Marca</div>', unsafe_allow_html=True)
-        scatter_df = df_fil[df_fil['Budget_Rev'] > 0].copy()
-        scatter_df['color'] = scatter_df['Vertical'].map(VERTICAL_COLORS)
-
-        fig_sc = px.scatter(
-            scatter_df,
-            x='LY_Rev', y='Budget_Rev',
-            size='Stock',
-            color='Vertical',
-            color_discrete_map=VERTICAL_COLORS,
-            hover_name='Marca',
-            hover_data={'LY_Rev':':.0f','Budget_Rev':':.0f','Stock':':.0f','Vertical':False},
-            size_max=40,
-            labels={'LY_Rev':'Revenue LY (€)','Budget_Rev':f'Budget {period_suffix} (€)'},
-        )
-        # Diagonal reference line
-        max_val = max(scatter_df['LY_Rev'].max(), scatter_df['Budget_Rev'].max())
-        fig_sc.add_trace(go.Scatter(
-            x=[0, max_val], y=[0, max_val],
-            mode='lines', line=dict(color='#252d3d', dash='dot', width=1),
-            showlegend=False, hoverinfo='skip'
-        ))
-        fig_sc.update_layout(**CHART_LAYOUT, height=340)
-        st.plotly_chart(fig_sc, width='stretch')
-
-    with col_b:
-        st.markdown('<div class="section-header">Margen % Budget vs LY</div>', unsafe_allow_html=True)
-        mg_df = df_fil[(df_fil['Budget_Mg%'] != 0) | (df_fil['LY_Mg%'] != 0)].copy()
-        mg_df = mg_df[mg_df['Budget_Rev'] > 5000].head(20)
-
-        fig_mg = go.Figure()
-        colors = mg_df['Vertical'].map(VERTICAL_COLORS).tolist()
-        fig_mg.add_trace(go.Bar(
-            name='Margen% LY',
-            x=mg_df['Marca'],
-            y=mg_df['LY_Mg%'],
-            marker_color='#252d3d',
-            marker_line_color='#3d4b63',
-            marker_line_width=1,
-        ))
-        fig_mg.add_trace(go.Bar(
-            name='Margen% Budget',
-            x=mg_df['Marca'],
-            y=mg_df['Budget_Mg%'],
-            marker_color=[VERTICAL_COLORS.get(v,'#7eb8ff') for v in mg_df['Vertical']],
-            marker_opacity=0.8,
-        ))
-        fig_mg.update_layout(**CHART_LAYOUT, height=340, barmode='group', bargap=0.15,
-                             yaxis=dict(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d'),
-                             xaxis=dict(tickangle=-35, gridcolor='#252d3d', linecolor='#252d3d'))
-        st.plotly_chart(fig_mg, width='stretch')
-
-    # ── Main margins table ──
-    st.markdown('<div class="section-header">Tabla de Márgenes</div>', unsafe_allow_html=True)
-
-    display_cols = {
-        'Marca':'Marca','Vertical':'Vertical','Stock':'Stock',
-        'Budget_Rev':'Budget Rev.','Budget_Mg%':'Budget Mg%',
-        'LY_Rev':'LY Revenue','LY_Mg%':'LY Mg%','LY_MgEur':'LY Mg€'
-    }
-    tbl = df_fil[list(display_cols.keys())].copy()
-    tbl.columns = list(display_cols.values())
-
-    def style_margins(df):
-        def color_mg(val):
-            if isinstance(val, float):
-                if val > 0.25: return 'color: #2ed573'
-                if val < 0:    return 'color: #ff4757'
-                if val > 0.15: return 'color: #d4dbe8'
-            return 'color: #8896ab'
-
-        styled = df.style\
-            .format({
-                'Stock':       '€{:,.0f}',
-                'Budget Rev.': '€{:,.0f}',
-                'Budget Mg%':  '{:.1%}',
-                'LY Revenue':  '€{:,.0f}',
-                'LY Mg%':      '{:.1%}',
-                'LY Mg€':      '€{:,.0f}',
-            })\
-            .applymap(color_mg, subset=['Budget Mg%', 'LY Mg%'])\
-            .set_properties(**{'background-color': '#1a1f2b', 'color': '#d4dbe8',
-                               'border-color': '#252d3d', 'font-size': '12px'})
-        return styled
-
-    st.dataframe(style_margins(tbl), width='stretch', height=420)
-
-    # ── Stock waterfall ──
-    st.markdown('<div class="section-header">Stock por Marca (Top 20)</div>', unsafe_allow_html=True)
-    stock_df = df_fil[df_fil['Stock'] > 0].nlargest(20, 'Stock')
-    fig_stock = go.Figure(go.Bar(
-        x=stock_df['Marca'],
-        y=stock_df['Stock'],
-        marker_color=[VERTICAL_COLORS.get(v, '#7eb8ff') for v in stock_df['Vertical']],
-        text=[fmt_eur(v) for v in stock_df['Stock']],
-        textposition='outside',
-        textfont=dict(size=10),
-    ))
-    fig_stock.update_layout(**CHART_LAYOUT, height=280, bargap=0.25,
-                            xaxis=dict(tickangle=-35, gridcolor='#252d3d', linecolor='#252d3d'))
-    st.plotly_chart(fig_stock, width='stretch')
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-# VERTICAL PAGES (shared renderer)
-# ════════════════════════════════════════════════════════════════════════════════
 else:
-    # Determine which vertical
-    vertical_config = {
-        "🏍️ Vertical 2 Wheels":      {'key':'2 WHEELS',    'label':'2 Wheels',    'color':'#7eb8ff', 'icon':'🏍️'},
-        "🌲 Vertical Free Time":      {'key':'FREE TIME',   'label':'Free Time',   'color':'#5de85d', 'icon':'🌲'},
-        "📡 Vertical Outdoor Tech":   {'key':'OUTDOOR TECH','label':'Outdoor Tech','color':'#e87de8', 'icon':'📡'},
-    }
-    cfg = vertical_config[page]
-    V_KEY   = cfg['key']
-    V_LABEL = cfg['label']
-    V_COLOR = cfg['color']
-    V_ICON  = cfg['icon']
+    vertical = section.split("·", 1)[1].strip()
+    st.title(f"{vertical} · {MONTHS_ES[current_month]}")
+    sub = model[model["Family"].str.upper() == vertical].copy()
+    if sub.empty:
+        st.warning("No hay marcas configuradas para este vertical.")
+    else:
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Revenue YTD", fmt_eur(sub["Revenue_YTD"].sum()))
+        k2.metric("Budget YTD", fmt_eur(sub["Budget_YTD"].sum()))
+        k3.metric("Expected Margin %", fmt_pct(np.average(sub["Expected Margin %"], weights=np.maximum(sub["Annual Budget"], 1))))
 
-    safe_current_month_name = escape(current_month_name)
-    safe_v_label = escape(V_LABEL)
-    st.markdown(f"""
-    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
-        <h1 style="margin:0;font-size:32px;color:{V_COLOR};">{V_ICON} {V_LABEL}</h1>
-        <span style="color:#5a6378;font-size:14px;">Vertical Dashboard · {overview_period if reporting_year else 'Periodo seleccionado'}</span>
-    </div>""", unsafe_allow_html=True)
-
-    # Filter data for this vertical
-    brands_v = df_margins[df_margins['Vertical']==V_KEY].copy()
-    brands_v = brands_v[~brands_v['Marca'].isin([V_KEY,'NUEVAS MARCAS','Marca',''])]
-
-    # Actual sales from ventas
-    ventas_v = vert_monthly[vert_monthly['Columna1'].str.upper()==V_KEY].copy()
-    brand_v_actual = df_ventas_full[
-        df_ventas_full['Columna1'].str.upper()==V_KEY
-    ].groupby('Nombre').agg(
-        Revenue=('Importe Neto','sum'),
-        Margen_Euros=('Margen_Euros','sum')
-    ).reset_index()
-    brand_v_actual['Margen_Pct'] = np.where(
-        brand_v_actual['Revenue'] != 0,
-        brand_v_actual['Margen_Euros'] / brand_v_actual['Revenue'], 0
-    )
-
-    rev_v  = brand_v_actual['Revenue'].sum()
-    mg_v   = brand_v_actual['Margen_Euros'].sum()
-    mgpct_v= mg_v / rev_v if rev_v else 0
-
-    # Budget for this vertical
-    v_row = df_margins_sum[df_margins_sum['Marca'].str.upper() == V_KEY]
-    budget_v     = float(v_row['Budget_Rev'].iloc[0]) if len(v_row) else 0
-    budget_mg_v  = float(v_row['Budget_Mg%'].iloc[0]) if len(v_row) else 0
-    stock_v      = float(v_row['Stock'].iloc[0]) if len(v_row) else 0
-    ly_rev_v     = float(v_row['LY_Rev'].iloc[0]) if len(v_row) else 0
-    ly_mgeur_v   = float(v_row['LY_MgEur'].iloc[0]) if len(v_row) else 0
-    ly_mgpct_v   = float(v_row['LY_Mg%'].iloc[0]) if len(v_row) else 0
-
-    bud_monthly_v= budget_v / 12
-
-    # ── KPI row ──
-    k1, k2, k3, k4, k5 = st.columns(5)
-    with k1:
-        st.metric(contextual_label("Revenue", current_month, reporting_year), fmt_eur(rev_v),
-                  f"Budget: {fmt_eur(bud_monthly_v)}")
-    with k2:
-        cumpl_v = rev_v / bud_monthly_v if bud_monthly_v else 0
-        st.metric("Cumpl. Budget", fmt_pct(cumpl_v),
-                  f"{rev_v - bud_monthly_v:+,.0f}€ vs budget")
-    with k3:
-        st.metric("Margen €", fmt_eur(mg_v),
-                  f"LY: {fmt_eur(ly_mgeur_v/12)}/mes")
-    with k4:
-        st.metric("Margen %", fmt_pct(mgpct_v),
-                  f"{(mgpct_v - ly_mgpct_v)*100:+.1f}pp vs LY")
-    with k5:
-        st.metric("Stock", fmt_eur(stock_v))
-
-    # Are we growing? HOW DOING vs BUDGET? LAST MONTH TREND
-    st.markdown("<br>", unsafe_allow_html=True)
-    ia1, ia2, ia3 = st.columns(3)
-    ly_monthly = ly_rev_v / 12
-    with ia1:
-        growing = rev_v > ly_monthly
-        indicator = "▲ GROWING" if growing else "▼ DECLINING"
-        ind_color = "#2ed573" if growing else "#ff4757"
-        pct_vs_ly = (rev_v / ly_monthly - 1)*100 if ly_monthly else 0
-        st.markdown(f"""
-        <div class="metric-card" style="border-color:{ind_color}40;">
-            <div class="metric-label">Are we growing?</div>
-            <div class="metric-value" style="font-size:20px;color:{ind_color};">{indicator}</div>
-            <div class="metric-delta" style="color:{ind_color};">{pct_vs_ly:+.1f}% vs LY (mensualiz.)</div>
-        </div>""", unsafe_allow_html=True)
-    with ia2:
-        doing_ok = rev_v >= bud_monthly_v * 0.9
-        doing_label = "✓ ON TRACK" if doing_ok else "✗ BEHIND BUDGET"
-        doing_color = "#2ed573" if doing_ok else "#ff4757"
-        diff_eur = rev_v - bud_monthly_v
-        st.markdown(f"""
-        <div class="metric-card" style="border-color:{doing_color}40;">
-            <div class="metric-label">How are we doing vs Budget?</div>
-            <div class="metric-value" style="font-size:20px;color:{doing_color};">{doing_label}</div>
-            <div class="metric-delta" style="color:{doing_color};">{diff_eur:+,.0f}€ vs budget mensual</div>
-        </div>""", unsafe_allow_html=True)
-    with ia3:
-        stock_pct = stock_v / budget_v if budget_v else 0
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">% Stock vs Year Budget</div>
-            <div class="metric-value" style="font-family:'DM Mono',monospace;">{fmt_pct(stock_pct)}</div>
-            <div class="metric-delta delta-neu">Stock: {fmt_eur(stock_v)} | Budget anual: {fmt_eur(budget_v)}</div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Charts ──
-    col_l, col_r = st.columns([3, 2])
-
-    with col_l:
-        st.markdown('<div class="section-header">Revenue Real vs Budget por Marca</div>', unsafe_allow_html=True)
-        merged_v = brand_v_actual.merge(
-            brands_v[['Marca','Budget_Rev','LY_Rev']].rename(columns={'Marca':'Nombre'}),
-            on='Nombre', how='outer'
-        ).fillna(0)
-        merged_v = merged_v.sort_values('Revenue', ascending=False).head(15)
-
-        fig_bv = go.Figure()
-        fig_bv.add_trace(go.Bar(
-            name='LY (anualiz./12)',
-            x=merged_v['Nombre'],
-            y=merged_v['LY_Rev'] / 12,
-            marker_color='#252d3d',
-            marker_line_color='#3d4b63', marker_line_width=1,
-        ))
-        fig_bv.add_trace(go.Bar(
-            name=contextual_label('Revenue', current_month, reporting_year),
-            x=merged_v['Nombre'],
-            y=merged_v['Revenue'],
-            marker_color=V_COLOR,
-            marker_opacity=0.85,
-        ))
-        fig_bv.add_trace(go.Scatter(
-            name='Budget /mes',
-            x=merged_v['Nombre'],
-            y=merged_v['Budget_Rev'] / 12,
-            mode='markers',
-            marker=dict(symbol='diamond', size=9, color='#e8ff00',
-                        line=dict(color='#0a0c10', width=1)),
-        ))
-        fig_bv.update_layout(**CHART_LAYOUT, height=340, barmode='group', bargap=0.2,
-                             xaxis=dict(tickangle=-35, gridcolor='#252d3d', linecolor='#252d3d'),
-                             legend={**DEFAULT_LEGEND, 'orientation':'h', 'y':1.1})
-        st.plotly_chart(fig_bv, width='stretch')
-
-    with col_r:
-        st.markdown('<div class="section-header">Margen % Real por Marca</div>', unsafe_allow_html=True)
-        mg_brand = brand_v_actual[brand_v_actual['Revenue'] > 0].sort_values('Revenue', ascending=False).head(12)
-        colors_mg = ['#2ed573' if m > 0.2 else ('#ff4757' if m < 0 else V_COLOR) for m in mg_brand['Margen_Pct']]
-
-        fig_mgb = go.Figure(go.Bar(
-            x=mg_brand['Margen_Pct'],
-            y=mg_brand['Nombre'],
-            orientation='h',
-            marker_color=colors_mg,
-            text=[fmt_pct(m) for m in mg_brand['Margen_Pct']],
-            textposition='outside',
-            textfont=dict(size=10),
-        ))
-        # Budget margin line
-        if budget_mg_v:
-            fig_mgb.add_vline(x=budget_mg_v, line_color='#e8ff00', line_dash='dot', line_width=2,
-                              annotation_text=f"Budget {fmt_pct(budget_mg_v)}", annotation_font_size=10)
-        fig_mgb.update_layout(**CHART_LAYOUT, height=340, showlegend=False,
-                              xaxis=dict(tickformat='.0%', gridcolor='#252d3d', linecolor='#252d3d'),
-                              yaxis=dict(gridcolor='#252d3d', linecolor='#252d3d'))
-        st.plotly_chart(fig_mgb, width='stretch')
-
-    # ── Budget monthly distribution ──
-    st.markdown(f'<div class="section-header">Distribución Budget Mensual {period_suffix}</div>', unsafe_allow_html=True)
-
-    # Get budget by month for this vertical from budget table
-    vert_brand_list = brands_v['Marca'].tolist()
-    vert_budget_rows = df_budget_raw[df_budget_raw['Marca'].isin(vert_brand_list)]
-    month_cols_budget = {
-        'Enero':'Venta Enero','Febrero':'Venta Febrero','Marzo':'Venta Marzo',
-        'Abril':'Venta Abril','Mayo':'Venta Mayo','Junio':'Venta Junio',
-        'Julio':'Venta Julio','Agosto':'Venta Agosto','Septiembre':'Venta Septiembre',
-        'Octubre':'Venta Octubre','Noviembre':'Venta Noviembre','Diciembre':'Venta Diciembre'
-    }
-    bud_by_month = []
-    for mes, col in month_cols_budget.items():
-        val = vert_budget_rows[col].sum() if col in vert_budget_rows.columns else 0
-        bud_by_month.append({'Mes': mes, 'Budget': val})
-    df_bm = pd.DataFrame(bud_by_month)
-
-    fig_bm = go.Figure()
-    fig_bm.add_trace(go.Bar(
-        x=df_bm['Mes'],
-        y=df_bm['Budget'],
-        marker_color=V_COLOR,
-        marker_opacity=0.3,
-        name='Budget',
-        hovertemplate='%{x}: €%{y:,.0f}<extra></extra>',
-    ))
-    # Actual for current month
-    fig_bm.add_trace(go.Bar(
-        x=[current_month_name],
-        y=[rev_v],
-        marker_color=V_COLOR,
-        name='Real',
-        hovertemplate=f'Real {current_month_name}: €%{{y:,.0f}}<extra></extra>',
-    ))
-    fig_bm.add_hline(y=bud_monthly_v, line_color='#e8ff00', line_dash='dot', line_width=1.5,
-                     annotation_text=f"Media mensual {fmt_eur(bud_monthly_v)}", annotation_font_size=10)
-    fig_bm.update_layout(**CHART_LAYOUT, height=260, bargap=0.2,
-                         legend={**DEFAULT_LEGEND, 'orientation':'h', 'y':1.1})
-    st.plotly_chart(fig_bm, width='stretch')
-
-    # ── Detailed brands table ──
-    st.markdown('<div class="section-header">Detalle de Marcas</div>', unsafe_allow_html=True)
-    detail = brand_v_actual.merge(
-        brands_v[['Marca','Budget_Rev','Budget_Mg%','Stock','LY_Rev','LY_Mg%','LY_MgEur']]\
-            .rename(columns={'Marca':'Nombre'}),
-        on='Nombre', how='outer'
-    ).fillna(0)
-    detail['Rev vs Budget'] = np.where(
-        detail['Budget_Rev'] / 12 > 0,
-        detail['Revenue'] / (detail['Budget_Rev'] / 12),
-        0
-    )
-    detail = detail.sort_values('Revenue', ascending=False)
-    detail_show = detail[['Nombre','Revenue','Margen_Euros','Margen_Pct',
-                           'Budget_Rev','Budget_Mg%','Stock','LY_Rev','LY_Mg%','Rev vs Budget']].copy()
-    detail_show.columns = ['Marca','Revenue','Margen€','Mg%','Budget Rev','Budget Mg%',
-                           'Stock','LY Rev','LY Mg%','Rev/Budget']
-
-    styled_detail = detail_show.style.format({
-        'Revenue':'€{:,.0f}','Margen€':'€{:,.0f}','Mg%':'{:.1%}',
-        'Budget Rev':'€{:,.0f}','Budget Mg%':'{:.1%}','Stock':'€{:,.0f}',
-        'LY Rev':'€{:,.0f}','LY Mg%':'{:.1%}','Rev/Budget':'{:.1%}'
-    }).applymap(
-        lambda v: 'color: #2ed573' if isinstance(v,float) and v > 0.2 else
-                  ('color: #ff4757' if isinstance(v,float) and v < 0 else ''),
-        subset=['Mg%','Budget Mg%','LY Mg%']
-    ).applymap(
-        lambda v: 'color: #2ed573' if isinstance(v,float) and v >= 1 else
-                  ('color: #ff4757' if isinstance(v,float) and 0 < v < 0.8 else ''),
-        subset=['Rev/Budget']
-    ).set_properties(**{'background-color':'#1a1f2b','color':'#d4dbe8',
-                        'border-color':'#252d3d','font-size':'12px'})
-
-    st.dataframe(styled_detail, width='stretch', height=380)
+        by_brand = sub.sort_values("Revenue_YTD", ascending=False)
+        fig = go.Figure()
+        fig.add_bar(x=by_brand["Short Name"], y=by_brand["Revenue_YTD"], name="Revenue YTD")
+        fig.add_bar(x=by_brand["Short Name"], y=by_brand["Budget_YTD"], name="Budget YTD")
+        fig.update_layout(barmode="group")
+        st.plotly_chart(fig, use_container_width=True)
