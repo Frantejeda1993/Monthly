@@ -171,6 +171,12 @@ def _normalize_vertical(value):
     return aliases.get(key, str(value).strip().upper() if pd.notna(value) else '—')
 
 
+def _normalize_brand(value):
+    if pd.isna(value):
+        return ''
+    return str(value).strip().upper()
+
+
 def _to_records(df: pd.DataFrame):
     clean = df.copy()
     clean = clean.replace({np.nan: None})
@@ -400,7 +406,7 @@ def read_sheet(uploaded_file, sheet_name):
     return pd.read_excel(bio, sheet_name=0)
 
 
-def build_margins_table(df_estado, df_stock, df_margin_ly):
+def build_margins_table(df_estado, df_stock, df_margin_ly, df_budget):
     base = df_estado.copy() if not df_estado.empty else pd.DataFrame(columns=['Marca', 'Vertical'])
     if 'Marca' not in base.columns:
         base['Marca'] = ''
@@ -408,6 +414,7 @@ def build_margins_table(df_estado, df_stock, df_margin_ly):
         base['Vertical'] = '—'
 
     base['Marca'] = base['Marca'].astype(str).str.strip()
+    base['BrandKey'] = base['Marca'].apply(_normalize_brand)
     base['Vertical'] = base['Vertical'].apply(_normalize_vertical)
 
     for c in ['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
@@ -421,8 +428,9 @@ def build_margins_table(df_estado, df_stock, df_margin_ly):
             stock.rename(columns={stock.columns[0]: 'Marca'}, inplace=True)
         if 'Stock' not in stock.columns:
             stock.rename(columns={stock.columns[1]: 'Stock'}, inplace=True)
-        stock = stock.groupby('Marca', as_index=False)['Stock'].sum()
-        base = base.merge(stock, on='Marca', how='left')
+        stock['BrandKey'] = stock['Marca'].apply(_normalize_brand)
+        stock = stock.groupby('BrandKey', as_index=False)['Stock'].sum()
+        base = base.merge(stock, on='BrandKey', how='left')
     if 'Stock' not in base.columns:
         base['Stock'] = 0
 
@@ -441,14 +449,72 @@ def build_margins_table(df_estado, df_stock, df_margin_ly):
             if 'ly_mg' in n and '%' in col:
                 rename_map[col] = 'LY_Mg%'
         ly = ly.rename(columns=rename_map)
+        ly['BrandKey'] = ly['Marca'].apply(_normalize_brand)
         for c in ['LY_Rev', 'LY_MgEur', 'LY_Mg%']:
             if c not in ly.columns:
                 ly[c] = 0
-        ly = ly[['Marca', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']]
-        base = base.drop(columns=['LY_Rev', 'LY_MgEur', 'LY_Mg%'], errors='ignore').merge(ly, on='Marca', how='left')
+        ly = ly[['BrandKey', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']]
+        base = base.drop(columns=['LY_Rev', 'LY_MgEur', 'LY_Mg%'], errors='ignore').merge(ly, on='BrandKey', how='left')
+
+    if not df_budget.empty:
+        budget = df_budget.copy()
+        budget.columns = [str(c).strip() for c in budget.columns]
+        if 'Marca' not in budget.columns:
+            budget.rename(columns={budget.columns[0]: 'Marca'}, inplace=True)
+
+        month_cols = [
+            c for c in [
+                'Venta Enero', 'Venta Febrero', 'Venta Marzo', 'Venta Abril',
+                'Venta Mayo', 'Venta Junio', 'Venta Julio', 'Venta Agosto',
+                'Venta Septiembre', 'Venta Octubre', 'Venta Noviembre', 'Venta Diciembre'
+            ] if c in budget.columns
+        ]
+        if month_cols:
+            budget['Budget_Rev'] = budget[month_cols].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1)
+
+        if 'Budget_Rev' not in budget.columns:
+            budget['Budget_Rev'] = 0
+
+        mg_pct_col = next(
+            (c for c in budget.columns if 'budget' in _normalize_col(c) and ('mg%' in _normalize_col(c) or 'margen' in _normalize_col(c))),
+            None
+        )
+        mg_eur_col = next(
+            (c for c in budget.columns if 'budget' in _normalize_col(c) and ('mgeur' in _normalize_col(c) or 'mg_eur' in _normalize_col(c))),
+            None
+        )
+
+        budget['Budget_Rev'] = pd.to_numeric(budget['Budget_Rev'], errors='coerce').fillna(0)
+        if mg_pct_col:
+            budget['Budget_Mg%'] = pd.to_numeric(budget[mg_pct_col], errors='coerce').fillna(0)
+        if mg_eur_col:
+            budget['Budget_MgEur'] = pd.to_numeric(budget[mg_eur_col], errors='coerce').fillna(0)
+
+        if 'Budget_MgEur' not in budget.columns:
+            budget['Budget_MgEur'] = budget['Budget_Rev'] * pd.to_numeric(budget.get('Budget_Mg%', 0), errors='coerce').fillna(0)
+        if 'Budget_Mg%' not in budget.columns:
+            budget['Budget_Mg%'] = np.where(
+                budget['Budget_Rev'] != 0,
+                budget['Budget_MgEur'] / budget['Budget_Rev'],
+                0,
+            )
+
+        budget['BrandKey'] = budget['Marca'].apply(_normalize_brand)
+        budget = budget.groupby('BrandKey', as_index=False)[['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur']].sum()
+        budget['Budget_Mg%'] = np.where(
+            budget['Budget_Rev'] != 0,
+            budget['Budget_MgEur'] / budget['Budget_Rev'],
+            0,
+        )
+
+        base = base.drop(columns=['Budget_Rev', 'Budget_Mg%', 'Budget_MgEur'], errors='ignore').merge(
+            budget, on='BrandKey', how='left'
+        )
 
     for c in ['Stock', 'Budget_Rev', 'Budget_Mg%', 'Budget_MgEur', 'LY_Rev', 'LY_MgEur', 'LY_Mg%']:
         base[c] = pd.to_numeric(base[c], errors='coerce').fillna(0)
+
+    base = base.drop(columns=['BrandKey'], errors='ignore')
 
     aggs = []
     for v in ['2 WHEELS', 'FREE TIME', 'OUTDOOR TECH', 'VARIOS']:
@@ -528,7 +594,7 @@ def load_data_from_firebase():
     for m, col in month_budget_cols.items():
         budget_monthly[m] = pd.to_numeric(df_budget_raw[col], errors='coerce').fillna(0).sum() if col in df_budget_raw.columns else 0
 
-    df_margins = build_margins_table(df_estado, df_stock, df_margin_ly)
+    df_margins = build_margins_table(df_estado, df_stock, df_margin_ly, df_budget_raw)
 
     return {
         'ventas': df_ventas,
