@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import numpy as np
+from html import escape
 from io import BytesIO
 from urllib.parse import urlparse
 import warnings
@@ -781,10 +782,11 @@ budget_enero= budget_monthly.get(1, 0)
 # ════════════════════════════════════════════════════════════════════════════════
 if page == "📊 Overview · RECAP":
 
+    safe_current_month_name = escape(current_month_name)
     st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
         <h1 style="margin:0;font-size:32px;">RECAP</h1>
-        <span style="color:#5a6378;font-size:14px;">Resumen Global · {current_month_name} 2026</span>
+        <span style="color:#5a6378;font-size:14px;">Resumen Global · {safe_current_month_name} 2026</span>
     </div>""", unsafe_allow_html=True)
 
     # ── KPI row ──
@@ -836,6 +838,7 @@ if page == "📊 Overview · RECAP":
         fig = go.Figure()
         for _, row in verticals_summary.iterrows():
             vname = str(row['Columna1'])
+            safe_vname = escape(vname)
             color = VERTICAL_COLORS.get(vname.upper(), '#7eb8ff')
             bud_match = v_budget[v_budget['Columna1']==vname.upper()]
             bud_val = float(bud_match['Budget'].iloc[0]) if len(bud_match) else 0
@@ -850,7 +853,7 @@ if page == "📊 Overview · RECAP":
                 text=[fmt_eur(row['Revenue'])],
                 textposition='outside',
                 textfont=dict(size=11, color=color),
-                hovertemplate=f"<b>{vname}</b><br>Revenue: €%{{y:,.0f}}<br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
+                hovertemplate=f"<b>{safe_vname}</b><br>Revenue: €%{{y:,.0f}}<br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
             ))
             if monthly_budget > 0:
                 fig.add_shape(type='line',
@@ -874,6 +877,7 @@ if page == "📊 Overview · RECAP":
         fig2 = go.Figure()
         for _, row in verticals_summary.iterrows():
             vname = str(row['Columna1'])
+            safe_vname = escape(vname)
             color = VERTICAL_COLORS.get(vname.upper(), '#7eb8ff')
             fig2.add_trace(go.Bar(
                 name=vname,
@@ -885,7 +889,7 @@ if page == "📊 Overview · RECAP":
                 text=[fmt_pct(row['Margen_Pct'])],
                 textposition='outside',
                 textfont=dict(size=11, color=color),
-                hovertemplate=f"<b>{vname}</b><br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
+                hovertemplate=f"<b>{safe_vname}</b><br>Margen: {fmt_pct(row['Margen_Pct'])}<extra></extra>",
             ))
 
         fig2.update_layout(**CHART_LAYOUT, height=320, showlegend=False, bargap=0.35)
@@ -942,43 +946,30 @@ if page == "📊 Overview · RECAP":
         on='Nombre', how='left'
     )
 
-    def render_table(df):
-        rows = ""
-        for _, r in df.iterrows():
-            v = str(r.get('Columna1','—') or '—').upper().strip()
-            tag_cls = {'2 WHEELS':'tag-2w','FREE TIME':'tag-ft','OUTDOOR TECH':'tag-ot'}.get(v,'')
-            tag_label = {'2 WHEELS':'2W','FREE TIME':'FT','OUTDOOR TECH':'OT'}.get(v,'—')
-            mg_color = '#2ed573' if r['Margen_Pct'] > 0.2 else ('#ff4757' if r['Margen_Pct'] < 0 else '#d4dbe8')
-            rev_pct = r['Revenue'] / total_rev * 100
-            rows += f"""
-            <tr style="border-bottom:1px solid #1a1f2b;">
-                <td style="padding:8px 12px;font-weight:600;">{r['Nombre']}</td>
-                <td style="padding:8px 12px;"><span class="tag {tag_cls}">{tag_label}</span></td>
-                <td style="padding:8px 12px;font-family:'DM Mono',monospace;text-align:right;">€{r['Revenue']:>10,.0f}</td>
-                <td style="padding:8px 12px;font-family:'DM Mono',monospace;text-align:right;">€{r['Margen_Euros']:>8,.0f}</td>
-                <td style="padding:8px 12px;font-family:'DM Mono',monospace;text-align:right;color:{mg_color};">{r['Margen_Pct']*100:.1f}%</td>
-                <td style="padding:8px 12px;">
-                    <div style="background:#252d3d;border-radius:4px;height:6px;">
-                        <div style="background:#e8ff00;border-radius:4px;height:6px;width:{min(rev_pct*3,100):.0f}%;"></div>
-                    </div>
-                </td>
-            </tr>"""
-        return f"""
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead>
-                <tr style="background:#12151c;border-bottom:1px solid #252d3d;">
-                    <th style="padding:8px 12px;text-align:left;color:#5a6378;font-size:11px;letter-spacing:.1em;text-transform:uppercase;">Marca</th>
-                    <th style="padding:8px 12px;text-align:left;color:#5a6378;font-size:11px;">Vert.</th>
-                    <th style="padding:8px 12px;text-align:right;color:#5a6378;font-size:11px;">Revenue</th>
-                    <th style="padding:8px 12px;text-align:right;color:#5a6378;font-size:11px;">Margen €</th>
-                    <th style="padding:8px 12px;text-align:right;color:#5a6378;font-size:11px;">Mg%</th>
-                    <th style="padding:8px 12px;text-align:left;color:#5a6378;font-size:11px;">Share</th>
-                </tr>
-            </thead>
-            <tbody style="background:#1a1f2b;">{rows}</tbody>
-        </table>"""
+    top_brands_show = top_brands.copy()
+    top_brands_show['Nombre'] = top_brands_show['Nombre'].apply(lambda v: escape(str(v or '')))
+    top_brands_show['Columna1'] = top_brands_show['Columna1'].apply(
+        lambda v: escape(str(v or '—').strip().upper())
+    )
+    top_brands_show['Share'] = np.where(
+        total_rev > 0,
+        top_brands_show['Revenue'] / total_rev,
+        0,
+    )
 
-    st.markdown(render_table(top_brands), unsafe_allow_html=True)
+    st.dataframe(
+        top_brands_show[['Nombre', 'Columna1', 'Revenue', 'Margen_Euros', 'Margen_Pct', 'Share']],
+        width='stretch',
+        hide_index=True,
+        column_config={
+            'Nombre': 'Marca',
+            'Columna1': 'Vertical',
+            'Revenue': st.column_config.NumberColumn('Revenue', format='€%.0f'),
+            'Margen_Euros': st.column_config.NumberColumn('Margen €', format='€%.0f'),
+            'Margen_Pct': st.column_config.NumberColumn('Mg%', format='%.1f%%'),
+            'Share': st.column_config.ProgressColumn('Share', format='%.1f%%', min_value=0.0, max_value=1.0),
+        },
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1143,10 +1134,12 @@ else:
     V_COLOR = cfg['color']
     V_ICON  = cfg['icon']
 
+    safe_current_month_name = escape(current_month_name)
+    safe_v_label = escape(V_LABEL)
     st.markdown(f"""
     <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">
-        <h1 style="margin:0;font-size:32px;color:{V_COLOR};">{V_ICON} {V_LABEL}</h1>
-        <span style="color:#5a6378;font-size:14px;">Vertical Dashboard · {current_month_name} 2026</span>
+        <h1 style="margin:0;font-size:32px;color:{V_COLOR};">{V_ICON} {safe_v_label}</h1>
+        <span style="color:#5a6378;font-size:14px;">Vertical Dashboard · {safe_current_month_name} 2026</span>
     </div>""", unsafe_allow_html=True)
 
     # Filter data for this vertical
