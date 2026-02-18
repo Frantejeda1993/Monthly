@@ -184,6 +184,32 @@ def read_sheet(uploaded_file, sheet_name):
     return pd.read_excel(bio, sheet_name=sheet_name if sheet_name in xls.sheet_names else 0)
 
 
+def read_uploaded_csv(uploaded_file) -> pd.DataFrame:
+    """Read CSV files uploaded from Streamlit with automatic delimiter detection."""
+    uploaded_file.seek(0)
+    data = uploaded_file.read()
+    uploaded_file.seek(0)
+
+    if isinstance(data, bytes):
+        text = data.decode("utf-8-sig", errors="replace")
+    else:
+        text = str(data)
+
+    # Handle common exports that use semicolons and/or commas as decimal separators.
+    try:
+        return pd.read_csv(BytesIO(text.encode("utf-8")), sep=None, engine="python")
+    except Exception as first_error:
+        for sep in (";", ",", "\t", "|"):
+            try:
+                return pd.read_csv(BytesIO(text.encode("utf-8")), sep=sep)
+            except Exception:
+                continue
+        raise ValueError(
+            "No se pudo leer el CSV. Verifica delimitador y formato del archivo. "
+            f"Detalle original: {first_error}"
+        ) from first_error
+
+
 def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> pd.DataFrame:
     if df is None or df.empty:
         raise ValueError(f"{dataset_name} está vacío.")
@@ -547,7 +573,7 @@ if section == "Brand Config":
     csv_up = st.file_uploader("Upload brand configuration CSV", type=["csv"], key="cfg_csv")
     if csv_up is not None:
         try:
-            incoming = pd.read_csv(csv_up)
+            incoming = read_uploaded_csv(csv_up)
             valid_cfg = validate_brand_config_df(incoming, set(brand_cfg["BrandKey"]))
             save_df_to_firebase("datasets/brand_configuration", valid_cfg)
             st.success("CSV validado y guardado.")
