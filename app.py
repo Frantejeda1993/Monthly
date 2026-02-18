@@ -772,10 +772,11 @@ def fmt_eur_delta(v):
     """Format KPI delta in € with sign first so Streamlit detects direction/colour."""
     if pd.isna(v):
         return "–"
-    sign = "+" if v > 0 else ""
+    sign = "+" if v > 0 else "-" if v < 0 else ""
+    abs_v = abs(v)
     if abs(v) >= 1_000_000:
-        return f"{sign}€{v / 1_000_000:,.2f}M"
-    return f"{sign}€{v:,.0f}"
+        return f"{sign}€{abs_v / 1_000_000:,.2f}M"
+    return f"{sign}€{abs_v:,.0f}"
 
 
 def fmt_pct(v):
