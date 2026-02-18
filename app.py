@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from datetime import datetime, timezone
 from io import BytesIO
 from urllib.parse import urlparse
@@ -54,6 +55,12 @@ def color_negative(value: float) -> str:
 
 def _normalize_col(col):
     return re.sub(r"\s+", "_", str(col).strip().lower())
+
+
+def _normalize_text(col):
+    text = str(col).strip().lower()
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", text)
 
 
 def _normalize_brand(value):
@@ -320,24 +327,63 @@ def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> p
 
     elif dataset_key == "margin_ly":
         rename = {}
+        month_name_to_number = {
+            "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+            "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+        }
         brand_col = _first_existing(dfx, ["Clave 1 Stock", "Clave 1", "Marca"])
         if brand_col:
             rename[brand_col] = "Marca"
         for c in dfx.columns:
             n = _normalize_col(c)
+            n_plain = _normalize_text(c)
             if n in ("acumulado_-_revenue", "acumulado_revenue", "ly_rev", "revenue_ly", "ly_revenue"):
                 rename[c] = "LY_Rev"
             if n in ("acumulado_-_margen_€", "acumulado_margen_€", "acumulado_margen_eur", "ly_mgeur", "ly_mg_eur"):
                 rename[c] = "LY_MgEur"
             if n in ("acumulado_-_margen%", "acumulado_margen%", "ly_mg%", "ly_mg_pct"):
                 rename[c] = "LY_Mg%"
+
+            month_match = re.match(r"^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s*-\s*(.+)$", n_plain)
+            if month_match:
+                month_name, metric = month_match.groups()
+                month_num = month_name_to_number[month_name]
+                metric = metric.strip()
+                if metric == "revenue":
+                    rename[c] = f"LY_M{month_num:02d}_Rev"
+                elif metric in ("margen%", "margen %"):
+                    rename[c] = f"LY_M{month_num:02d}_MgPct"
+                elif metric in ("margen", "margen eur", "margen e", "margen euro"):
+                    rename[c] = f"LY_M{month_num:02d}_MgEur"
+
         dfx = dfx.rename(columns=rename)
         if "Marca" not in dfx.columns:
             raise ValueError(f"{dataset_name}: falta columna de marca (Clave 1 Stock).")
-        for c in ["LY_Rev", "LY_MgEur", "LY_Mg%"]:
-            if c not in dfx.columns:
-                dfx[c] = 0
+
+        monthly_rev_cols = [f"LY_M{i:02d}_Rev" for i in range(1, 13) if f"LY_M{i:02d}_Rev" in dfx.columns]
+        monthly_mg_eur_cols = [f"LY_M{i:02d}_MgEur" for i in range(1, 13) if f"LY_M{i:02d}_MgEur" in dfx.columns]
+        monthly_mg_pct_cols = [f"LY_M{i:02d}_MgPct" for i in range(1, 13) if f"LY_M{i:02d}_MgPct" in dfx.columns]
+
+        for c in [*monthly_rev_cols, *monthly_mg_eur_cols, *monthly_mg_pct_cols]:
             dfx[c] = pd.to_numeric(dfx[c], errors="coerce").fillna(0)
+
+        for c in ["LY_Rev", "LY_MgEur", "LY_Mg%"]:
+            if c in dfx.columns:
+                dfx[c] = pd.to_numeric(dfx[c], errors="coerce").fillna(0)
+
+        if "LY_Rev" not in dfx.columns:
+            dfx["LY_Rev"] = dfx[monthly_rev_cols].sum(axis=1) if monthly_rev_cols else 0
+        if "LY_MgEur" not in dfx.columns:
+            dfx["LY_MgEur"] = dfx[monthly_mg_eur_cols].sum(axis=1) if monthly_mg_eur_cols else 0
+        if "LY_Mg%" not in dfx.columns:
+            if monthly_mg_pct_cols:
+                dfx["LY_Mg%"] = dfx[monthly_mg_pct_cols].mean(axis=1)
+            else:
+                dfx["LY_Mg%"] = np.where(dfx["LY_Rev"] != 0, dfx["LY_MgEur"] / dfx["LY_Rev"] * 100, 0)
+
+        dfx["LY_Rev"] = pd.to_numeric(dfx["LY_Rev"], errors="coerce").fillna(0)
+        dfx["LY_MgEur"] = pd.to_numeric(dfx["LY_MgEur"], errors="coerce").fillna(0)
+        dfx["LY_Mg%"] = pd.to_numeric(dfx["LY_Mg%"], errors="coerce").fillna(0)
 
     return dfx
 
@@ -488,9 +534,25 @@ def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
 
     ly = df_margin_ly.copy()
     ly["BrandKey"] = _get_series(ly, "Marca").apply(_normalize_brand)
-    ly = ly.groupby("BrandKey", as_index=False).agg(LY_Rev=("LY_Rev", "sum"), LY_MgEur=("LY_MgEur", "sum"), LY_Mg_pct=("LY_Mg%", "mean"))
-    ly["LY_Rev_YTD"] = ly["LY_Rev"] * current_month / 12
-    ly["LY_MgEur_YTD"] = ly["LY_MgEur"] * current_month / 12
+    monthly_ly_rev_cols = [f"LY_M{i:02d}_Rev" for i in range(1, 13) if f"LY_M{i:02d}_Rev" in ly.columns]
+    monthly_ly_mg_eur_cols = [f"LY_M{i:02d}_MgEur" for i in range(1, 13) if f"LY_M{i:02d}_MgEur" in ly.columns]
+
+    ly_agg = {"LY_Rev": "sum", "LY_MgEur": "sum", "LY_Mg%": "mean"}
+    ly_agg.update({c: "sum" for c in monthly_ly_rev_cols})
+    ly_agg.update({c: "sum" for c in monthly_ly_mg_eur_cols})
+    ly = ly.groupby("BrandKey", as_index=False).agg(ly_agg).rename(columns={"LY_Mg%": "LY_Mg_pct"})
+
+    if monthly_ly_rev_cols:
+        ly["LY_Rev"] = ly[monthly_ly_rev_cols].sum(axis=1)
+        ly["LY_Rev_YTD"] = ly[monthly_ly_rev_cols[:current_month]].sum(axis=1)
+    else:
+        ly["LY_Rev_YTD"] = ly["LY_Rev"] * current_month / 12
+
+    if monthly_ly_mg_eur_cols:
+        ly["LY_MgEur"] = ly[monthly_ly_mg_eur_cols].sum(axis=1)
+        ly["LY_MgEur_YTD"] = ly[monthly_ly_mg_eur_cols[:current_month]].sum(axis=1)
+    else:
+        ly["LY_MgEur_YTD"] = ly["LY_MgEur"] * current_month / 12
 
     model = (
         brand_cfg
