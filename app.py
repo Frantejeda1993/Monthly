@@ -14,6 +14,17 @@ from firebase_admin import credentials, db
 
 st.set_page_config(page_title="Sportech IB · Dashboard", page_icon="🏍️", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    .stSidebar .stRadio > div {gap: 0.35rem;}
+    .stSidebar .stRadio label p {font-weight: 700; font-size: 0.95rem;}
+    .kpi-card {background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.65rem;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 MONTHS_ES = {
     1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
     7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
@@ -21,6 +32,24 @@ MONTHS_ES = {
 STATUS_OPTIONS = ["NEW", "STANDARD", "PHASE OUT"]
 FAMILY_OPTIONS = ["2 WHEELS", "FREE TIME", "OUTDOOR TECH", "UNCLASSIFIED"]
 MONTH_BUDGET_COLS = [f"Budget {MONTHS_ES[i]}" for i in range(1, 13)]
+
+
+def pct_delta(current: float, base: float) -> float:
+    if base == 0:
+        return 0.0 if current == 0 else np.nan
+    return (current / base) - 1
+
+
+def safe_ratio(num: float, den: float) -> float:
+    if den == 0:
+        return np.nan
+    return num / den
+
+
+def color_negative(value: float) -> str:
+    if pd.isna(value):
+        return "color: #6b7280"
+    return "color: #dc2626; font-weight: 700" if value < 0 else "color: #15803d; font-weight: 700"
 
 
 def _normalize_col(col):
@@ -431,6 +460,7 @@ def build_brand_config(master_df: pd.DataFrame, saved_cfg: pd.DataFrame) -> pd.D
 def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     sales = df_sales.copy()
     sales["BrandKey"] = _get_series(sales, "Nombre").apply(_normalize_brand)
+    sales["Mes Factura"] = pd.to_numeric(sales["Mes Factura"], errors="coerce").fillna(0).astype(int)
 
     sales_ytd = sales[sales["Mes Factura"] <= current_month].copy()
     grouped = sales_ytd.groupby("BrandKey", as_index=False).agg(
@@ -439,6 +469,19 @@ def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     grouped["Margin_PCT_YTD"] = np.where(grouped["Revenue_YTD"] != 0, grouped["Margin_EUR_YTD"] / grouped["Revenue_YTD"], 0)
     grouped["Revenue_Projected"] = grouped["Revenue_YTD"] / max(current_month, 1) * 12
 
+    monthly_sales = sales.groupby(["BrandKey", "Mes Factura"], as_index=False).agg(
+        Revenue_Month=("Importe Neto", "sum"), Margin_EUR_Month=("Margen_Euros", "sum")
+    )
+
+    prev_month = 12 if current_month == 1 else current_month - 1
+    prev_month_sales = monthly_sales[monthly_sales["Mes Factura"] == prev_month].groupby("BrandKey", as_index=False).agg(
+        Revenue_Prev_Month=("Revenue_Month", "sum"), Margin_EUR_Prev_Month=("Margin_EUR_Month", "sum")
+    )
+
+    current_month_sales = monthly_sales[monthly_sales["Mes Factura"] == current_month].groupby("BrandKey", as_index=False).agg(
+        Revenue_Current_Month=("Revenue_Month", "sum"), Margin_EUR_Current_Month=("Margin_EUR_Month", "sum")
+    )
+
     stock = df_stock.copy()
     stock["BrandKey"] = _get_series(stock, "Marca").apply(_normalize_brand)
     stock = stock.groupby("BrandKey", as_index=False)["Stock"].sum()
@@ -446,15 +489,43 @@ def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     ly = df_margin_ly.copy()
     ly["BrandKey"] = _get_series(ly, "Marca").apply(_normalize_brand)
     ly = ly.groupby("BrandKey", as_index=False).agg(LY_Rev=("LY_Rev", "sum"), LY_MgEur=("LY_MgEur", "sum"), LY_Mg_pct=("LY_Mg%", "mean"))
+    ly["LY_Rev_YTD"] = ly["LY_Rev"] * current_month / 12
+    ly["LY_MgEur_YTD"] = ly["LY_MgEur"] * current_month / 12
 
-    model = brand_cfg.merge(grouped, on="BrandKey", how="left").merge(stock, on="BrandKey", how="left").merge(ly, on="BrandKey", how="left")
-    for c in ["Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Revenue_Projected", "Stock", "LY_Rev", "LY_MgEur", "LY_Mg_pct"]:
+    model = (
+        brand_cfg
+        .merge(grouped, on="BrandKey", how="left")
+        .merge(current_month_sales, on="BrandKey", how="left")
+        .merge(prev_month_sales, on="BrandKey", how="left")
+        .merge(stock, on="BrandKey", how="left")
+        .merge(ly, on="BrandKey", how="left")
+    )
+    for c in [
+        "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Revenue_Projected", "Stock", "LY_Rev", "LY_MgEur", "LY_Mg_pct",
+        "LY_Rev_YTD", "LY_MgEur_YTD", "Revenue_Current_Month", "Margin_EUR_Current_Month", "Revenue_Prev_Month", "Margin_EUR_Prev_Month",
+    ]:
         model[c] = pd.to_numeric(model[c], errors="coerce").fillna(0)
 
     model["Budget_YTD"] = model[MONTH_BUDGET_COLS[:current_month]].sum(axis=1)
     model["Budget_Month"] = model[MONTH_BUDGET_COLS[current_month - 1]]
+    model["Annual Budget"] = pd.to_numeric(model["Annual Budget"], errors="coerce").fillna(0)
     model["Budget_vs_Actual"] = model["Revenue_YTD"] - model["Budget_YTD"]
-    return model
+    model["Stock_vs_Year_Budget"] = np.where(model["Annual Budget"] != 0, model["Stock"] / model["Annual Budget"], np.nan)
+
+    revenue_ly_base = model["LY_Rev_YTD"].replace(0, np.nan)
+    margin_ly_base = model["LY_MgEur_YTD"].replace(0, np.nan)
+    budget_base = model["Budget_YTD"].replace(0, np.nan)
+    prev_rev_base = model["Revenue_Prev_Month"].replace(0, np.nan)
+    prev_margin_base = model["Margin_EUR_Prev_Month"].replace(0, np.nan)
+
+    model["Growth_vs_LY_Revenue_PCT"] = (model["Revenue_YTD"] / revenue_ly_base) - 1
+    model["Growth_vs_LY_Margin_PCT"] = (model["Margin_EUR_YTD"] / margin_ly_base) - 1
+    model["Vs_Budget_PCT"] = (model["Revenue_YTD"] / budget_base) - 1
+    model["Last_Month_Trend_Revenue_PCT"] = (model["Revenue_Current_Month"] / prev_rev_base) - 1
+    model["Last_Month_Trend_Margin_PCT"] = (model["Margin_EUR_Current_Month"] / prev_margin_base) - 1
+
+    monthly_by_brand = monthly_sales[monthly_sales["Mes Factura"] <= current_month].copy()
+    return model, monthly_by_brand
 
 
 def fmt_eur(v):
@@ -484,30 +555,31 @@ def apply_dashboard_filters(df: pd.DataFrame, section_name: str, default_family:
     st.sidebar.markdown(f"#### Filtros · {section_name}")
 
     families = sorted(df["Family"].dropna().astype(str).unique().tolist())
-    if default_family and default_family in families:
-        default_families = [default_family]
-    else:
-        default_families = families
-
     selected_families = st.sidebar.multiselect(
         "Familias",
         options=families,
-        default=default_families,
+        default=[],
+        placeholder="Sin selección = todas",
         key=f"families_{section_name}",
     )
-    filtered = df[df["Family"].isin(selected_families)].copy() if selected_families else df.iloc[0:0].copy()
+
+    if selected_families:
+        filtered = df[df["Family"].isin(selected_families)].copy()
+    elif default_family and default_family in families:
+        filtered = df[df["Family"] == default_family].copy()
+    else:
+        filtered = df.copy()
 
     brand_options = sorted(filtered["Brand"].dropna().astype(str).unique().tolist())
     selected_brands = st.sidebar.multiselect(
         "Marcas",
         options=brand_options,
-        default=brand_options,
+        default=[],
+        placeholder="Sin selección = todas",
         key=f"brands_{section_name}",
     )
     if selected_brands:
         filtered = filtered[filtered["Brand"].isin(selected_brands)].copy()
-    else:
-        filtered = filtered.iloc[0:0].copy()
 
     return filtered
 
@@ -522,16 +594,17 @@ with st.sidebar:
     else:
         st.error(firebase_msg)
 
-    up_sales = st.file_uploader("INPUT (Monthly) Sales", type=["xlsx"], key="sales")
-    st.markdown("#### INPUT (Monthly) Stock por mes")
-    stock_uploads = {}
-    for month_idx in range(1, 13):
-        stock_uploads[month_idx] = st.file_uploader(
-            f"Stock · {MONTHS_ES[month_idx]}",
-            type=["xlsx"],
-            key=f"stock_{month_idx}",
-        )
-    up_margin = st.file_uploader("INPUT (Annual) MARGIN LY", type=["xlsx"], key="margin")
+    with st.expander("📥 INPUTS", expanded=False):
+        up_sales = st.file_uploader("INPUT (Monthly) Sales", type=["xlsx"], key="sales")
+        st.markdown("#### INPUT (Monthly) Stock por mes")
+        stock_uploads = {}
+        for month_idx in range(1, 13):
+            stock_uploads[month_idx] = st.file_uploader(
+                f"Stock · {MONTHS_ES[month_idx]}",
+                type=["xlsx"],
+                key=f"stock_{month_idx}",
+            )
+        up_margin = st.file_uploader("INPUT (Annual) MARGIN LY", type=["xlsx"], key="margin")
 
     if st.button("Guardar INPUTS en Firebase", disabled=not firebase_ok, use_container_width=True):
         try:
@@ -586,7 +659,7 @@ if not available_months:
     )
     st.stop()
 current_month = st.sidebar.selectbox("Current Month", options=available_months, index=len(available_months) - 1)
-section = st.sidebar.radio("Section", ["Brand Config", "Overview", "Margin", "Vertical · 2 WHEELS", "Vertical · FREE TIME", "Vertical · OUTDOOR TECH"])
+section = st.sidebar.radio("Sección", ["Brand Config", "Overview", "Margin", "Vertical · 2 WHEELS", "Vertical · FREE TIME", "Vertical · OUTDOOR TECH"], key="section_selector")
 
 if section == "Brand Config":
     st.title("⚙️ Brand Master & Financial Configuration")
@@ -643,7 +716,7 @@ if section == "Brand Config":
 
     st.stop()
 
-model = prepare_model(sales_df, stock_df, margin_ly_df, brand_cfg, current_month)
+model, monthly_brand_series = prepare_model(sales_df, stock_df, margin_ly_df, brand_cfg, current_month)
 
 if section == "Overview":
     filtered_model = apply_dashboard_filters(model, "overview")
@@ -656,45 +729,70 @@ if section == "Overview":
     total_mg = filtered_model["Margin_EUR_YTD"].sum()
     total_budget = filtered_model["Budget_YTD"].sum()
     total_stock = filtered_model["Stock"].sum()
-    budget_gap = total_rev - total_budget
-    vs_ly = total_rev - filtered_model["LY_Rev"].sum()
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Revenue YTD", fmt_eur(total_rev))
     c2.metric("Margin € YTD", fmt_eur(total_mg))
     c3.metric("Margin % YTD", fmt_pct(total_mg / total_rev if total_rev else 0))
     c4.metric("Budget Attainment", fmt_pct(total_rev / total_budget if total_budget else 0))
-    c5.metric("Gap vs Budget", fmt_eur(budget_gap))
+    c5.metric("Gap vs Budget", fmt_eur(total_rev - total_budget))
     c6.metric("Stock", fmt_eur(total_stock))
 
-    s1, s2 = st.columns(2)
-    s1.metric("Variación Revenue vs LY", fmt_eur(vs_ly))
-    s2.metric("Marcas activas", f"{filtered_model['Brand'].nunique()}")
-
-    vert = filtered_model.groupby("Family", as_index=False).agg(
-        Revenue=("Revenue_YTD", "sum"), Margin=("Margin_EUR_YTD", "sum"), Budget=("Budget_YTD", "sum")
+    overview_fam = filtered_model.groupby("Family", as_index=False).agg(
+        Revenue_YTD=("Revenue_YTD", "sum"),
+        Margin_EUR_YTD=("Margin_EUR_YTD", "sum"),
+        Budget_YTD=("Budget_YTD", "sum"),
+        LY_Rev_YTD=("LY_Rev_YTD", "sum"),
+        LY_MgEur_YTD=("LY_MgEur_YTD", "sum"),
+        Revenue_Current_Month=("Revenue_Current_Month", "sum"),
+        Revenue_Prev_Month=("Revenue_Prev_Month", "sum"),
+        Margin_EUR_Current_Month=("Margin_EUR_Current_Month", "sum"),
+        Margin_EUR_Prev_Month=("Margin_EUR_Prev_Month", "sum"),
+        Stock=("Stock", "sum"),
+        Annual_Budget=("Annual Budget", "sum"),
     )
-    fig = px.bar(vert, x="Family", y="Revenue", color="Family", title="Revenue YTD por Vertical")
-    st.plotly_chart(fig, use_container_width=True)
+    overview_fam["Growth Rev %"] = overview_fam.apply(lambda r: pct_delta(r["Revenue_YTD"], r["LY_Rev_YTD"]), axis=1)
+    overview_fam["Growth Rev €"] = overview_fam["Revenue_YTD"] - overview_fam["LY_Rev_YTD"]
+    overview_fam["Growth Margin %"] = overview_fam.apply(lambda r: pct_delta(r["Margin_EUR_YTD"], r["LY_MgEur_YTD"]), axis=1)
+    overview_fam["Growth Margin €"] = overview_fam["Margin_EUR_YTD"] - overview_fam["LY_MgEur_YTD"]
+    overview_fam["Vs Budget %"] = overview_fam.apply(lambda r: pct_delta(r["Revenue_YTD"], r["Budget_YTD"]), axis=1)
+    overview_fam["Vs Budget €"] = overview_fam["Revenue_YTD"] - overview_fam["Budget_YTD"]
+    overview_fam["Last Month Rev %"] = overview_fam.apply(lambda r: pct_delta(r["Revenue_Current_Month"], r["Revenue_Prev_Month"]), axis=1)
+    overview_fam["Last Month Margin %"] = overview_fam.apply(lambda r: pct_delta(r["Margin_EUR_Current_Month"], r["Margin_EUR_Prev_Month"]), axis=1)
+    overview_fam["% Stock vs Year Budget"] = overview_fam.apply(lambda r: safe_ratio(r["Stock"], r["Annual_Budget"]), axis=1)
 
-    by_brand_gap = filtered_model.sort_values("Budget_vs_Actual").copy()
-    fig_gap = px.bar(
-        by_brand_gap,
-        x="Short Name",
-        y="Budget_vs_Actual",
-        color="Budget_vs_Actual",
-        color_continuous_scale="RdYlGn",
-        title="Gap Presupuesto vs Real por Marca",
+    display_fam = overview_fam[[
+        "Family", "Growth Rev %", "Growth Rev €", "Growth Margin %", "Growth Margin €",
+        "Vs Budget %", "Vs Budget €", "Last Month Rev %", "Last Month Margin %", "% Stock vs Year Budget"
+    ]].copy()
+    st.subheader("KPIs por Familia")
+    st.dataframe(
+        display_fam.style.format({
+            "Growth Rev %": fmt_pct,
+            "Growth Rev €": fmt_eur,
+            "Growth Margin %": fmt_pct,
+            "Growth Margin €": fmt_eur,
+            "Vs Budget %": fmt_pct,
+            "Vs Budget €": fmt_eur,
+            "Last Month Rev %": fmt_pct,
+            "Last Month Margin %": fmt_pct,
+            "% Stock vs Year Budget": fmt_pct,
+        }).map(color_negative, subset=["Growth Rev %", "Growth Margin %", "Vs Budget %", "Last Month Rev %", "Last Month Margin %"]).map(color_negative, subset=["Growth Rev €", "Growth Margin €", "Vs Budget €"]),
+        use_container_width=True,
     )
-    fig_gap.update_layout(xaxis_title="Marca", yaxis_title="€")
-    st.plotly_chart(fig_gap, use_container_width=True)
 
-    comp = filtered_model.sort_values("Revenue_YTD", ascending=False).head(15)
-    fig_comp = go.Figure()
-    fig_comp.add_bar(x=comp["Short Name"], y=comp["Revenue_YTD"], name="Revenue YTD")
-    fig_comp.add_scatter(x=comp["Short Name"], y=comp["Budget_YTD"], mode="lines+markers", name="Budget YTD")
-    fig_comp.update_layout(title="Top 15 marcas · Revenue vs Budget", xaxis_title="Marca", yaxis_title="€")
-    st.plotly_chart(fig_comp, use_container_width=True)
+    fam_series = monthly_brand_series.merge(filtered_model[["BrandKey", "Family"]], on="BrandKey", how="inner")
+    fam_monthly = fam_series.groupby(["Family", "Mes Factura"], as_index=False).agg(Revenue_Month=("Revenue_Month", "sum"), Margin_EUR_Month=("Margin_EUR_Month", "sum"))
+    flow = px.line(
+        fam_monthly,
+        x="Mes Factura",
+        y="Revenue_Month",
+        color="Family",
+        markers=True,
+        title="Last Month Trend · Flujo mensual de ventas por Familia",
+    )
+    flow.update_layout(xaxis_title="Mes", yaxis_title="Revenue (€)")
+    st.plotly_chart(flow, use_container_width=True)
 
 elif section == "Margin":
     filtered_model = apply_dashboard_filters(model, "margin")
@@ -707,9 +805,9 @@ elif section == "Margin":
     m1.metric("Margin € YTD", fmt_eur(filtered_model["Margin_EUR_YTD"].sum()))
     m2.metric("Margin % YTD", fmt_pct(filtered_model["Margin_EUR_YTD"].sum() / filtered_model["Revenue_YTD"].sum() if filtered_model["Revenue_YTD"].sum() else 0))
     m3.metric("Expected Margin %", weighted_expected_margin_display(filtered_model))
-    m4.metric("Desviación vs LY", fmt_eur(filtered_model["Margin_EUR_YTD"].sum() - filtered_model["LY_MgEur"].sum()))
+    m4.metric("Desviación vs LY", fmt_eur(filtered_model["Margin_EUR_YTD"].sum() - filtered_model["LY_MgEur_YTD"].sum()))
 
-    table = filtered_model[["Brand", "Short Name", "Status", "Family", "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Expected Margin %", "Stock", "LY_Rev", "LY_MgEur"]].copy()
+    table = filtered_model[["Brand", "Short Name", "Status", "Family", "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Expected Margin %", "Stock", "LY_Rev_YTD", "LY_MgEur_YTD"]].copy()
     st.dataframe(table, use_container_width=True)
 
     mg_scatter = px.scatter(
@@ -724,17 +822,6 @@ elif section == "Margin":
     mg_scatter.update_layout(xaxis_title="Revenue YTD (€)", yaxis_title="Margin %")
     st.plotly_chart(mg_scatter, use_container_width=True)
 
-    margin_rank = filtered_model.sort_values("Margin_EUR_YTD", ascending=False).head(15)
-    fig_margin_rank = px.bar(
-        margin_rank,
-        x="Short Name",
-        y="Margin_EUR_YTD",
-        color="Margin_PCT_YTD",
-        color_continuous_scale="Blues",
-        title="Top 15 marcas por Margen €",
-    )
-    st.plotly_chart(fig_margin_rank, use_container_width=True)
-
 else:
     vertical = section.split("·", 1)[1].strip()
     st.title(f"{vertical} · {MONTHS_ES[current_month]}")
@@ -742,28 +829,63 @@ else:
     if sub.empty:
         st.warning("No hay marcas configuradas para este vertical.")
     else:
+        agg = {
+            "revenue": sub["Revenue_YTD"].sum(),
+            "margin": sub["Margin_EUR_YTD"].sum(),
+            "ly_rev": sub["LY_Rev_YTD"].sum(),
+            "ly_margin": sub["LY_MgEur_YTD"].sum(),
+            "budget": sub["Budget_YTD"].sum(),
+            "cur_month_rev": sub["Revenue_Current_Month"].sum(),
+            "prev_month_rev": sub["Revenue_Prev_Month"].sum(),
+            "cur_month_margin": sub["Margin_EUR_Current_Month"].sum(),
+            "prev_month_margin": sub["Margin_EUR_Prev_Month"].sum(),
+            "stock": sub["Stock"].sum(),
+            "annual_budget": sub["Annual Budget"].sum(),
+        }
+
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Revenue YTD", fmt_eur(sub["Revenue_YTD"].sum()))
-        k2.metric("Budget YTD", fmt_eur(sub["Budget_YTD"].sum()))
-        k3.metric(
-            "Expected Margin %",
-            weighted_expected_margin_display(sub),
-            help="Budget-weighted average using non-negative Annual Budget weights; rows with NaN Expected Margin % are excluded. Returns N/A when total valid weight is zero.",
-        )
-        k4.metric("Gap vs Budget", fmt_eur(sub["Budget_vs_Actual"].sum()))
-        st.caption("Expected Margin % KPI = weighted average by Annual Budget (clip lower bound at 0, excluding NaN expected margins).")
+        k1.metric("ARE WE GROWING? Rev", fmt_pct(pct_delta(agg["revenue"], agg["ly_rev"])))
+        k2.metric("ARE WE GROWING? Margin", fmt_pct(pct_delta(agg["margin"], agg["ly_margin"])))
+        k3.metric("HOW ARE WE DOING VS BUDGET?", fmt_pct(pct_delta(agg["revenue"], agg["budget"])))
+        k4.metric("% STOCK VS YEAR BUDGET", fmt_pct(safe_ratio(agg["stock"], agg["annual_budget"])))
 
-        by_brand = sub.sort_values("Revenue_YTD", ascending=False)
-        fig = go.Figure()
-        fig.add_bar(x=by_brand["Short Name"], y=by_brand["Revenue_YTD"], name="Revenue YTD")
-        fig.add_bar(x=by_brand["Short Name"], y=by_brand["Budget_YTD"], name="Budget YTD")
-        fig.update_layout(barmode="group")
+        t1, t2 = st.columns(2)
+        t1.metric("LAST MONTH TREND Rev", fmt_pct(pct_delta(agg["cur_month_rev"], agg["prev_month_rev"])))
+        t2.metric("LAST MONTH TREND Margin", fmt_pct(pct_delta(agg["cur_month_margin"], agg["prev_month_margin"])))
+
+        brand_view = sub[[
+            "Short Name", "Revenue_YTD", "Margin_EUR_YTD", "LY_Rev_YTD", "LY_MgEur_YTD", "Budget_YTD",
+            "Growth_vs_LY_Revenue_PCT", "Growth_vs_LY_Margin_PCT", "Vs_Budget_PCT",
+            "Last_Month_Trend_Revenue_PCT", "Last_Month_Trend_Margin_PCT", "Stock_vs_Year_Budget"
+        ]].copy().sort_values("Revenue_YTD", ascending=False)
+        st.dataframe(
+            brand_view.style.format({
+                "Revenue_YTD": fmt_eur,
+                "Margin_EUR_YTD": fmt_eur,
+                "LY_Rev_YTD": fmt_eur,
+                "LY_MgEur_YTD": fmt_eur,
+                "Budget_YTD": fmt_eur,
+                "Growth_vs_LY_Revenue_PCT": fmt_pct,
+                "Growth_vs_LY_Margin_PCT": fmt_pct,
+                "Vs_Budget_PCT": fmt_pct,
+                "Last_Month_Trend_Revenue_PCT": fmt_pct,
+                "Last_Month_Trend_Margin_PCT": fmt_pct,
+                "Stock_vs_Year_Budget": fmt_pct,
+            }).map(color_negative, subset=[
+                "Growth_vs_LY_Revenue_PCT", "Growth_vs_LY_Margin_PCT", "Vs_Budget_PCT",
+                "Last_Month_Trend_Revenue_PCT", "Last_Month_Trend_Margin_PCT"
+            ]),
+            use_container_width=True,
+        )
+
+        monthly_vertical = monthly_brand_series.merge(sub[["BrandKey", "Short Name"]], on="BrandKey", how="inner")
+        fig = px.line(
+            monthly_vertical,
+            x="Mes Factura",
+            y="Revenue_Month",
+            color="Short Name",
+            markers=True,
+            title="LAST MONTH TREND · Flujo mensual por marca",
+        )
+        fig.update_layout(xaxis_title="Mes", yaxis_title="Revenue (€)")
         st.plotly_chart(fig, use_container_width=True)
-
-        fig_stock = px.pie(
-            sub.sort_values("Stock", ascending=False).head(10),
-            names="Short Name",
-            values="Stock",
-            title="Distribución de stock (Top 10)",
-        )
-        st.plotly_chart(fig_stock, use_container_width=True)
