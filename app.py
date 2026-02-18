@@ -326,6 +326,19 @@ def fmt_pct(v):
     return f"{v * 100:.1f}%"
 
 
+def weighted_expected_margin_display(df: pd.DataFrame):
+    expected = pd.to_numeric(df.get("Expected Margin %"), errors="coerce")
+    weights = pd.to_numeric(df.get("Annual Budget"), errors="coerce").fillna(0).clip(lower=0)
+    valid = expected.notna()
+    expected_valid = expected[valid]
+    weights_valid = weights[valid]
+    total_weight = weights_valid.sum()
+
+    if expected_valid.empty or total_weight <= 0:
+        return "N/A"
+    return fmt_pct(np.average(expected_valid, weights=weights_valid))
+
+
 firebase_ok, firebase_msg = init_firebase()
 
 with st.sidebar:
@@ -455,7 +468,12 @@ else:
         k1, k2, k3 = st.columns(3)
         k1.metric("Revenue YTD", fmt_eur(sub["Revenue_YTD"].sum()))
         k2.metric("Budget YTD", fmt_eur(sub["Budget_YTD"].sum()))
-        k3.metric("Expected Margin %", fmt_pct(np.average(sub["Expected Margin %"], weights=np.maximum(sub["Annual Budget"], 1))))
+        k3.metric(
+            "Expected Margin %",
+            weighted_expected_margin_display(sub),
+            help="Budget-weighted average using non-negative Annual Budget weights; rows with NaN Expected Margin % are excluded. Returns N/A when total valid weight is zero.",
+        )
+        st.caption("Expected Margin % KPI = weighted average by Annual Budget (clip lower bound at 0, excluding NaN expected margins).")
 
         by_brand = sub.sort_values("Revenue_YTD", ascending=False)
         fig = go.Figure()
