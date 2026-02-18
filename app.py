@@ -478,6 +478,40 @@ def weighted_expected_margin_display(df: pd.DataFrame):
     return fmt_pct(np.average(expected_valid, weights=weights_valid))
 
 
+def apply_dashboard_filters(df: pd.DataFrame, section_name: str, default_family: str | None = None) -> pd.DataFrame:
+    """Apply family and brand filters in sidebar for dashboard sections."""
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"#### Filtros · {section_name}")
+
+    families = sorted(df["Family"].dropna().astype(str).unique().tolist())
+    if default_family and default_family in families:
+        default_families = [default_family]
+    else:
+        default_families = families
+
+    selected_families = st.sidebar.multiselect(
+        "Familias",
+        options=families,
+        default=default_families,
+        key=f"families_{section_name}",
+    )
+    filtered = df[df["Family"].isin(selected_families)].copy() if selected_families else df.iloc[0:0].copy()
+
+    brand_options = sorted(filtered["Brand"].dropna().astype(str).unique().tolist())
+    selected_brands = st.sidebar.multiselect(
+        "Marcas",
+        options=brand_options,
+        default=brand_options,
+        key=f"brands_{section_name}",
+    )
+    if selected_brands:
+        filtered = filtered[filtered["Brand"].isin(selected_brands)].copy()
+    else:
+        filtered = filtered.iloc[0:0].copy()
+
+    return filtered
+
+
 firebase_ok, firebase_msg = init_firebase()
 
 with st.sidebar:
@@ -612,34 +646,103 @@ if section == "Brand Config":
 model = prepare_model(sales_df, stock_df, margin_ly_df, brand_cfg, current_month)
 
 if section == "Overview":
+    filtered_model = apply_dashboard_filters(model, "overview")
     st.title(f"📊 Overview · {MONTHS_ES[current_month]}")
-    total_rev = model["Revenue_YTD"].sum()
-    total_mg = model["Margin_EUR_YTD"].sum()
-    total_budget = model["Budget_YTD"].sum()
+    if filtered_model.empty:
+        st.warning("No hay datos para los filtros seleccionados.")
+        st.stop()
 
-    c1, c2, c3, c4 = st.columns(4)
+    total_rev = filtered_model["Revenue_YTD"].sum()
+    total_mg = filtered_model["Margin_EUR_YTD"].sum()
+    total_budget = filtered_model["Budget_YTD"].sum()
+    total_stock = filtered_model["Stock"].sum()
+    budget_gap = total_rev - total_budget
+    vs_ly = total_rev - filtered_model["LY_Rev"].sum()
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Revenue YTD", fmt_eur(total_rev))
     c2.metric("Margin € YTD", fmt_eur(total_mg))
     c3.metric("Margin % YTD", fmt_pct(total_mg / total_rev if total_rev else 0))
     c4.metric("Budget Attainment", fmt_pct(total_rev / total_budget if total_budget else 0))
+    c5.metric("Gap vs Budget", fmt_eur(budget_gap))
+    c6.metric("Stock", fmt_eur(total_stock))
 
-    vert = model.groupby("Family", as_index=False).agg(Revenue=("Revenue_YTD", "sum"), Margin=("Margin_EUR_YTD", "sum"))
+    s1, s2 = st.columns(2)
+    s1.metric("Variación Revenue vs LY", fmt_eur(vs_ly))
+    s2.metric("Marcas activas", f"{filtered_model['Brand'].nunique()}")
+
+    vert = filtered_model.groupby("Family", as_index=False).agg(
+        Revenue=("Revenue_YTD", "sum"), Margin=("Margin_EUR_YTD", "sum"), Budget=("Budget_YTD", "sum")
+    )
     fig = px.bar(vert, x="Family", y="Revenue", color="Family", title="Revenue YTD por Vertical")
     st.plotly_chart(fig, use_container_width=True)
 
+    by_brand_gap = filtered_model.sort_values("Budget_vs_Actual").copy()
+    fig_gap = px.bar(
+        by_brand_gap,
+        x="Short Name",
+        y="Budget_vs_Actual",
+        color="Budget_vs_Actual",
+        color_continuous_scale="RdYlGn",
+        title="Gap Presupuesto vs Real por Marca",
+    )
+    fig_gap.update_layout(xaxis_title="Marca", yaxis_title="€")
+    st.plotly_chart(fig_gap, use_container_width=True)
+
+    comp = filtered_model.sort_values("Revenue_YTD", ascending=False).head(15)
+    fig_comp = go.Figure()
+    fig_comp.add_bar(x=comp["Short Name"], y=comp["Revenue_YTD"], name="Revenue YTD")
+    fig_comp.add_scatter(x=comp["Short Name"], y=comp["Budget_YTD"], mode="lines+markers", name="Budget YTD")
+    fig_comp.update_layout(title="Top 15 marcas · Revenue vs Budget", xaxis_title="Marca", yaxis_title="€")
+    st.plotly_chart(fig_comp, use_container_width=True)
+
 elif section == "Margin":
+    filtered_model = apply_dashboard_filters(model, "margin")
     st.title(f"📈 Margin · {MONTHS_ES[current_month]}")
-    table = model[["Brand", "Short Name", "Status", "Family", "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Expected Margin %", "Stock", "LY_Rev", "LY_MgEur"]].copy()
+    if filtered_model.empty:
+        st.warning("No hay datos para los filtros seleccionados.")
+        st.stop()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Margin € YTD", fmt_eur(filtered_model["Margin_EUR_YTD"].sum()))
+    m2.metric("Margin % YTD", fmt_pct(filtered_model["Margin_EUR_YTD"].sum() / filtered_model["Revenue_YTD"].sum() if filtered_model["Revenue_YTD"].sum() else 0))
+    m3.metric("Expected Margin %", weighted_expected_margin_display(filtered_model))
+    m4.metric("Desviación vs LY", fmt_eur(filtered_model["Margin_EUR_YTD"].sum() - filtered_model["LY_MgEur"].sum()))
+
+    table = filtered_model[["Brand", "Short Name", "Status", "Family", "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD", "Expected Margin %", "Stock", "LY_Rev", "LY_MgEur"]].copy()
     st.dataframe(table, use_container_width=True)
+
+    mg_scatter = px.scatter(
+        filtered_model,
+        x="Revenue_YTD",
+        y="Margin_PCT_YTD",
+        size="Stock",
+        color="Family",
+        hover_name="Short Name",
+        title="Mix de margen: Revenue vs Margin %",
+    )
+    mg_scatter.update_layout(xaxis_title="Revenue YTD (€)", yaxis_title="Margin %")
+    st.plotly_chart(mg_scatter, use_container_width=True)
+
+    margin_rank = filtered_model.sort_values("Margin_EUR_YTD", ascending=False).head(15)
+    fig_margin_rank = px.bar(
+        margin_rank,
+        x="Short Name",
+        y="Margin_EUR_YTD",
+        color="Margin_PCT_YTD",
+        color_continuous_scale="Blues",
+        title="Top 15 marcas por Margen €",
+    )
+    st.plotly_chart(fig_margin_rank, use_container_width=True)
 
 else:
     vertical = section.split("·", 1)[1].strip()
     st.title(f"{vertical} · {MONTHS_ES[current_month]}")
-    sub = model[model["Family"].str.upper() == vertical].copy()
+    sub = apply_dashboard_filters(model, f"vertical_{vertical}", default_family=vertical)
     if sub.empty:
         st.warning("No hay marcas configuradas para este vertical.")
     else:
-        k1, k2, k3 = st.columns(3)
+        k1, k2, k3, k4 = st.columns(4)
         k1.metric("Revenue YTD", fmt_eur(sub["Revenue_YTD"].sum()))
         k2.metric("Budget YTD", fmt_eur(sub["Budget_YTD"].sum()))
         k3.metric(
@@ -647,6 +750,7 @@ else:
             weighted_expected_margin_display(sub),
             help="Budget-weighted average using non-negative Annual Budget weights; rows with NaN Expected Margin % are excluded. Returns N/A when total valid weight is zero.",
         )
+        k4.metric("Gap vs Budget", fmt_eur(sub["Budget_vs_Actual"].sum()))
         st.caption("Expected Margin % KPI = weighted average by Annual Budget (clip lower bound at 0, excluding NaN expected margins).")
 
         by_brand = sub.sort_values("Revenue_YTD", ascending=False)
@@ -655,3 +759,11 @@ else:
         fig.add_bar(x=by_brand["Short Name"], y=by_brand["Budget_YTD"], name="Budget YTD")
         fig.update_layout(barmode="group")
         st.plotly_chart(fig, use_container_width=True)
+
+        fig_stock = px.pie(
+            sub.sort_values("Stock", ascending=False).head(10),
+            names="Short Name",
+            values="Stock",
+            title="Distribución de stock (Top 10)",
+        )
+        st.plotly_chart(fig_stock, use_container_width=True)
