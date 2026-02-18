@@ -49,7 +49,10 @@ def _get_series(df: pd.DataFrame, column: str) -> pd.Series:
 
 
 def _auto_short_name(brand: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z\s]", "", str(brand))
+    text = str(brand)
+    text = re.sub(r"^\s*\d+\s*-\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(familia|famlia)\b", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[^A-Za-z\s]", "", text)
     cleaned = re.sub(r"\s+", " ", cleaned).strip().upper()
     if not cleaned:
         return "BRAND"
@@ -285,11 +288,25 @@ def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> p
 
 
 def extract_brand_master(df_sales, df_stock, df_margin_ly):
-    brands = set(_get_series(df_sales, "Nombre").dropna().astype(str).str.strip().tolist())
-    brands.update(_get_series(df_stock, "Marca").dropna().astype(str).str.strip().tolist())
-    brands.update(_get_series(df_margin_ly, "Marca").dropna().astype(str).str.strip().tolist())
-    clean = sorted({b for b in brands if b})
-    master = pd.DataFrame({"Brand": clean})
+    brand_map = {}
+
+    def _register(series: pd.Series):
+        for value in series.dropna().astype(str).str.strip():
+            if not value:
+                continue
+            key = _normalize_brand(value)
+            if key and key not in brand_map:
+                brand_map[key] = value
+
+    _register(_get_series(df_sales, "Nombre"))
+    _register(_get_series(df_stock, "Marca"))
+    _register(_get_series(df_margin_ly, "Marca"))
+
+    master = pd.DataFrame(
+        sorted(({"Brand": brand, "BrandKey": key} for key, brand in brand_map.items()), key=lambda x: x["BrandKey"])
+    )
+    if master.empty:
+        return pd.DataFrame(columns=["Brand", "BrandKey"])
     master["BrandKey"] = master["Brand"].apply(_normalize_brand)
     return master
 
