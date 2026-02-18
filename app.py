@@ -67,6 +67,52 @@ def color_negative(value: float) -> str:
     return "color: #dc2626; font-weight: 700" if value < 0 else "color: #15803d; font-weight: 700"
 
 
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6:
+        return 255, 255, 255
+    return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#" + "".join(f"{max(0, min(255, c)):02x}" for c in rgb)
+
+
+def _interpolate_hex(start: str, end: str, ratio: float) -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    start_rgb = _hex_to_rgb(start)
+    end_rgb = _hex_to_rgb(end)
+    mixed = tuple(int(round(s + (e - s) * ratio)) for s, e in zip(start_rgb, end_rgb))
+    return _rgb_to_hex(mixed)
+
+
+def _contrast_text_color(bg_hex: str) -> str:
+    r, g, b = _hex_to_rgb(bg_hex)
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return "#111827" if luminance > 0.6 else "#f9fafb"
+
+
+def style_gradient_fallback(series: pd.Series, low_color: str, high_color: str) -> pd.Series:
+    valid = series.dropna()
+    if valid.empty:
+        return pd.Series([""] * len(series), index=series.index)
+
+    min_val = valid.min()
+    max_val = valid.max()
+    span = max_val - min_val
+
+    styles = []
+    for value in series:
+        if pd.isna(value):
+            styles.append("")
+            continue
+        ratio = 0.5 if span == 0 else (value - min_val) / span
+        bg_color = _interpolate_hex(low_color, high_color, ratio)
+        fg_color = _contrast_text_color(bg_color)
+        styles.append(f"background-color: {bg_color}; color: {fg_color};")
+    return pd.Series(styles, index=series.index)
+
+
 def _normalize_col(col):
     return re.sub(r"\s+", "_", str(col).strip().lower())
 
@@ -1378,15 +1424,17 @@ if section == "Resumen":
     segment["Quarter"] = segment["Quarter"].apply(lambda q: f"Q{int(q)}")
 
     st.subheader("Segmentación por familia y trimestre")
+    segment_styler = segment.style.format({
+        "Revenue": fmt_eur,
+        "Margin": fmt_eur,
+        "Tasa Margen %": fmt_pct,
+        "COGS Rate %": fmt_pct,
+    })
+
     st.dataframe(
-        segment.style.format({
-            "Revenue": fmt_eur,
-            "Margin": fmt_eur,
-            "Tasa Margen %": fmt_pct,
-            "COGS Rate %": fmt_pct,
-        })
-        .background_gradient(subset=["Tasa Margen %"], cmap="RdYlGn")
-        .background_gradient(subset=["Revenue"], cmap="Blues"),
+        segment_styler
+        .apply(style_gradient_fallback, subset=["Tasa Margen %"], low_color="#b91c1c", high_color="#15803d")
+        .apply(style_gradient_fallback, subset=["Revenue"], low_color="#dbeafe", high_color="#1d4ed8"),
         use_container_width=True,
     )
 
