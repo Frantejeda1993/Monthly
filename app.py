@@ -24,7 +24,7 @@ MONTH_BUDGET_COLS = [f"Budget {MONTHS_ES[i]}" for i in range(1, 13)]
 
 
 def _normalize_col(col):
-    return str(col).strip().lower().replace(" ", "_")
+    return re.sub(r"\s+", "_", str(col).strip().lower())
 
 
 def _normalize_brand(value):
@@ -180,6 +180,18 @@ def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> p
     dfx.columns = [str(c).strip() for c in dfx.columns]
 
     if dataset_key == "sales":
+        rename = {}
+        brand_col = _first_existing(dfx, ["Clave 1", "Nombre Cliente", "Marca", "Nombre"])
+        if brand_col:
+            rename[brand_col] = "Nombre"
+        net_col = _first_existing(dfx, ["Importe Neto", "Importe"])
+        if net_col:
+            rename[net_col] = "Importe Neto"
+        margin_col = _first_existing(dfx, ["CR3: % Margen s/Venta", "Margen %", "Margin %"])
+        if margin_col:
+            rename[margin_col] = "CR3: % Margen s/Venta"
+        dfx = dfx.rename(columns=rename)
+
         required = ["Nombre", "Importe Neto"]
         missing = [c for c in required if c not in dfx.columns]
         if missing:
@@ -218,27 +230,44 @@ def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> p
         dfx["Margen_Euros"] = pd.to_numeric(dfx["Margen_Euros"], errors="coerce").fillna(0)
 
     elif dataset_key == "stock":
-        if "Marca" not in dfx.columns:
-            dfx = dfx.rename(columns={dfx.columns[0]: "Marca"})
-        if "Stock" not in dfx.columns and len(dfx.columns) > 1:
-            dfx = dfx.rename(columns={dfx.columns[1]: "Stock"})
-        if "Marca" not in dfx.columns or "Stock" not in dfx.columns:
-            raise ValueError(f"{dataset_name}: se requieren columnas Marca y Stock.")
-        dfx["Stock"] = pd.to_numeric(dfx["Stock"], errors="coerce").fillna(0)
+        rename = {}
+        brand_col = _first_existing(dfx, ["Clave 1", "Marca"])
+        if brand_col:
+            rename[brand_col] = "Marca"
+        code_col = _first_existing(dfx, ["Código Artículo", "Codigo Articulo", "Código", "Codigo"])
+        if code_col:
+            rename[code_col] = "Codigo Articulo"
+        amount_col = _first_existing(dfx, ["Importe", "Stock"])
+        if amount_col:
+            rename[amount_col] = "Importe"
+        dfx = dfx.rename(columns=rename)
+
+        required = ["Marca", "Codigo Articulo", "Importe"]
+        missing = [c for c in required if c not in dfx.columns]
+        if missing:
+            raise ValueError(f"{dataset_name}: faltan columnas {missing}.")
+
+        dfx["Codigo Articulo"] = dfx["Codigo Articulo"].astype(str).str.strip()
+        has_code = dfx["Codigo Articulo"].replace({"": np.nan, "nan": np.nan, "None": np.nan}).notna()
+        dfx = dfx[has_code].copy()
+        dfx["Stock"] = pd.to_numeric(dfx["Importe"], errors="coerce").fillna(0)
 
     elif dataset_key == "margin_ly":
-        if "Marca" not in dfx.columns:
-            dfx = dfx.rename(columns={dfx.columns[0]: "Marca"})
         rename = {}
+        brand_col = _first_existing(dfx, ["Clave 1 Stock", "Clave 1", "Marca"])
+        if brand_col:
+            rename[brand_col] = "Marca"
         for c in dfx.columns:
             n = _normalize_col(c)
-            if "ly_rev" in n or n in ("revenue_ly", "ly_revenue"):
+            if n in ("acumulado_-_revenue", "acumulado_revenue", "ly_rev", "revenue_ly", "ly_revenue"):
                 rename[c] = "LY_Rev"
-            if "ly_mgeur" in n or "ly_mg_eur" in n:
+            if n in ("acumulado_-_margen_€", "acumulado_margen_€", "acumulado_margen_eur", "ly_mgeur", "ly_mg_eur"):
                 rename[c] = "LY_MgEur"
-            if "ly_mg" in n and "%" in c:
+            if n in ("acumulado_-_margen%", "acumulado_margen%", "ly_mg%", "ly_mg_pct"):
                 rename[c] = "LY_Mg%"
         dfx = dfx.rename(columns=rename)
+        if "Marca" not in dfx.columns:
+            raise ValueError(f"{dataset_name}: falta columna de marca (Clave 1 Stock).")
         for c in ["LY_Rev", "LY_MgEur", "LY_Mg%"]:
             if c not in dfx.columns:
                 dfx[c] = 0
@@ -409,15 +438,33 @@ with st.sidebar:
         st.error(firebase_msg)
 
     up_sales = st.file_uploader("INPUT (Monthly) Sales", type=["xlsx"], key="sales")
-    up_stock = st.file_uploader("INPUT (Monthly) Stock", type=["xlsx"], key="stock")
+    st.markdown("#### INPUT (Monthly) Stock por mes")
+    stock_uploads = {}
+    for month_idx in range(1, 13):
+        stock_uploads[month_idx] = st.file_uploader(
+            f"Stock · {MONTHS_ES[month_idx]}",
+            type=["xlsx"],
+            key=f"stock_{month_idx}",
+        )
     up_margin = st.file_uploader("INPUT (Annual) MARGIN LY", type=["xlsx"], key="margin")
 
     if st.button("Guardar INPUTS en Firebase", disabled=not firebase_ok, use_container_width=True):
         try:
             if up_sales:
                 save_df_to_firebase("datasets/monthly_sales", validate_dataset(read_sheet(up_sales, "INPUT (Monthly) Sales"), "sales", "INPUT (Monthly) Sales"))
-            if up_stock:
-                save_df_to_firebase("datasets/monthly_stock", validate_dataset(read_sheet(up_stock, "INPUT (Monthly) Stock"), "stock", "INPUT (Monthly) Stock"))
+            stock_frames = []
+            for month_idx, up_stock in stock_uploads.items():
+                if not up_stock:
+                    continue
+                stock_month = validate_dataset(
+                    read_sheet(up_stock, "INPUT (Monthly) Stock"),
+                    "stock",
+                    f"INPUT (Monthly) Stock · {MONTHS_ES[month_idx]}",
+                )
+                stock_month["Mes"] = month_idx
+                stock_frames.append(stock_month)
+            if stock_frames:
+                save_df_to_firebase("datasets/monthly_stock", pd.concat(stock_frames, ignore_index=True))
             if up_margin:
                 save_df_to_firebase("datasets/annual_margin_ly", validate_dataset(read_sheet(up_margin, "INPUT (Annual) MARGIN LY"), "margin_ly", "INPUT (Annual) MARGIN LY"))
             st.success("INPUTS guardados")
