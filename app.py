@@ -542,6 +542,12 @@ def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     ly_agg.update({c: "sum" for c in monthly_ly_mg_eur_cols})
     ly = ly.groupby("BrandKey", as_index=False).agg(ly_agg).rename(columns={"LY_Mg%": "LY_Mg_pct"})
 
+    if current_month == 1 and {"LY_M12_Rev", "LY_M12_MgEur"}.issubset(ly.columns):
+        prev_month_sales = ly[["BrandKey", "LY_M12_Rev", "LY_M12_MgEur"]].rename(columns={
+            "LY_M12_Rev": "Revenue_Prev_Month",
+            "LY_M12_MgEur": "Margin_EUR_Prev_Month",
+        })
+
     if monthly_ly_rev_cols:
         ly["LY_Rev"] = ly[monthly_ly_rev_cols].sum(axis=1)
         ly["LY_Rev_YTD"] = ly[monthly_ly_rev_cols[:current_month]].sum(axis=1)
