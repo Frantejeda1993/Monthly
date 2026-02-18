@@ -129,9 +129,20 @@ def load_df_from_firebase(path: str) -> pd.DataFrame:
     if isinstance(raw, dict) and "columns" in raw and "rows" in raw:
         return pd.DataFrame(raw["rows"], columns=raw["columns"])
     if isinstance(raw, list):
-        return pd.DataFrame(raw)
+        if all(isinstance(item, dict) or hasattr(item, "items") for item in raw):
+            return pd.DataFrame.from_records([dict(item) for item in raw])
+        return pd.DataFrame({"value": raw})
     if isinstance(raw, dict):
-        return pd.DataFrame(list(raw.values()))
+        rows = []
+        for key, value in raw.items():
+            if isinstance(value, dict) or hasattr(value, "items"):
+                row = dict(value)
+                if "_key" not in row:
+                    row["_key"] = key
+                rows.append(row)
+            else:
+                rows.append({"_key": key, "value": value})
+        return pd.DataFrame.from_records(rows)
     return pd.DataFrame()
 
 
