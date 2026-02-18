@@ -40,6 +40,14 @@ def _first_existing(df, candidates):
     return None
 
 
+def _get_series(df: pd.DataFrame, column: str) -> pd.Series:
+    """Return a single Series even when duplicate column names are present."""
+    values = df[column]
+    if isinstance(values, pd.DataFrame):
+        return values.iloc[:, 0]
+    return values
+
+
 def _auto_short_name(brand: str) -> str:
     cleaned = re.sub(r"[^A-Za-z\s]", "", str(brand))
     cleaned = re.sub(r"\s+", " ", cleaned).strip().upper()
@@ -277,9 +285,9 @@ def validate_dataset(df: pd.DataFrame, dataset_key: str, dataset_name: str) -> p
 
 
 def extract_brand_master(df_sales, df_stock, df_margin_ly):
-    brands = set(df_sales["Nombre"].dropna().astype(str).str.strip().tolist())
-    brands.update(df_stock["Marca"].dropna().astype(str).str.strip().tolist())
-    brands.update(df_margin_ly["Marca"].dropna().astype(str).str.strip().tolist())
+    brands = set(_get_series(df_sales, "Nombre").dropna().astype(str).str.strip().tolist())
+    brands.update(_get_series(df_stock, "Marca").dropna().astype(str).str.strip().tolist())
+    brands.update(_get_series(df_margin_ly, "Marca").dropna().astype(str).str.strip().tolist())
     clean = sorted({b for b in brands if b})
     master = pd.DataFrame({"Brand": clean})
     master["BrandKey"] = master["Brand"].apply(_normalize_brand)
@@ -379,7 +387,7 @@ def build_brand_config(master_df: pd.DataFrame, saved_cfg: pd.DataFrame) -> pd.D
 
 def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     sales = df_sales.copy()
-    sales["BrandKey"] = sales["Nombre"].apply(_normalize_brand)
+    sales["BrandKey"] = _get_series(sales, "Nombre").apply(_normalize_brand)
 
     sales_ytd = sales[sales["Mes Factura"] <= current_month].copy()
     grouped = sales_ytd.groupby("BrandKey", as_index=False).agg(
@@ -389,11 +397,11 @@ def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     grouped["Revenue_Projected"] = grouped["Revenue_YTD"] / max(current_month, 1) * 12
 
     stock = df_stock.copy()
-    stock["BrandKey"] = stock["Marca"].apply(_normalize_brand)
+    stock["BrandKey"] = _get_series(stock, "Marca").apply(_normalize_brand)
     stock = stock.groupby("BrandKey", as_index=False)["Stock"].sum()
 
     ly = df_margin_ly.copy()
-    ly["BrandKey"] = ly["Marca"].apply(_normalize_brand)
+    ly["BrandKey"] = _get_series(ly, "Marca").apply(_normalize_brand)
     ly = ly.groupby("BrandKey", as_index=False).agg(LY_Rev=("LY_Rev", "sum"), LY_MgEur=("LY_MgEur", "sum"), LY_Mg_pct=("LY_Mg%", "mean"))
 
     model = brand_cfg.merge(grouped, on="BrandKey", how="left").merge(stock, on="BrandKey", how="left").merge(ly, on="BrandKey", how="left")
