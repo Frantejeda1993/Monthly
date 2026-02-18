@@ -604,6 +604,37 @@ def fmt_pct(v):
     return f"{v * 100:.1f}%"
 
 
+def detect_outliers(series: pd.Series, threshold: float = 2.0) -> tuple[pd.Series, float, float]:
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+    if clean.empty:
+        return pd.Series([False] * len(series), index=series.index), np.nan, np.nan
+    mean = clean.mean()
+    std = clean.std(ddof=0)
+    if std == 0 or pd.isna(std):
+        return pd.Series([False] * len(series), index=series.index), float(mean), float(std)
+    z_score = (pd.to_numeric(series, errors="coerce") - mean).abs() / std
+    return z_score > threshold, float(mean), float(std)
+
+
+def build_monthly_overview(fam_series: pd.DataFrame, current_month: int) -> pd.DataFrame:
+    monthly = fam_series.groupby(["Family", "Mes Factura"], as_index=False).agg(
+        Revenue_Month=("Revenue_Month", "sum"),
+        Margin_EUR_Month=("Margin_EUR_Month", "sum"),
+    )
+    monthly = monthly[monthly["Mes Factura"].between(1, current_month, inclusive="both")].copy()
+    monthly = monthly.sort_values(["Family", "Mes Factura"])
+    monthly["MoM_Revenue_PCT"] = monthly.groupby("Family")["Revenue_Month"].pct_change()
+    monthly["MoM_Margin_PCT"] = monthly.groupby("Family")["Margin_EUR_Month"].pct_change()
+    monthly["Quarter"] = ((monthly["Mes Factura"] - 1) // 3) + 1
+    return monthly
+
+
+def linear_projection(ytd_value: float, current_month: int) -> float:
+    if current_month <= 0:
+        return 0.0
+    return ytd_value / current_month * 12
+
+
 def weighted_expected_margin_display(df: pd.DataFrame):
     expected = pd.to_numeric(df.get("Expected Margin %"), errors="coerce")
     weights = pd.to_numeric(df.get("Annual Budget"), errors="coerce").fillna(0).clip(lower=0)
@@ -798,6 +829,9 @@ if section == "Overview":
     total_budget = filtered_model["Budget_YTD"].sum()
     total_stock = filtered_model["Stock"].sum()
 
+    total_rev_ly = filtered_model["LY_Rev_YTD"].sum()
+    total_mg_ly = filtered_model["LY_MgEur_YTD"].sum()
+
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Revenue YTD", fmt_eur(total_rev))
     c2.metric("Margin € YTD", fmt_eur(total_mg))
@@ -805,6 +839,12 @@ if section == "Overview":
     c4.metric("Budget Attainment", fmt_pct(total_rev / total_budget if total_budget else 0))
     c5.metric("Gap vs Budget", fmt_eur(total_rev - total_budget))
     c6.metric("Stock", fmt_eur(total_stock))
+
+    e1, e2, e3, e4 = st.columns(4)
+    e1.metric("YoY Revenue", fmt_pct(pct_delta(total_rev, total_rev_ly)))
+    e2.metric("YoY Margin €", fmt_pct(pct_delta(total_mg, total_mg_ly)))
+    e3.metric("ROI (Margin/Revenue)", fmt_pct(safe_ratio(total_mg, total_rev)))
+    e4.metric("Proyección Revenue FY", fmt_eur(linear_projection(total_rev, current_month)))
 
     overview_fam = filtered_model.groupby("Family", as_index=False).agg(
         Revenue_YTD=("Revenue_YTD", "sum"),
@@ -850,17 +890,78 @@ if section == "Overview":
     )
 
     fam_series = monthly_brand_series.merge(filtered_model[["BrandKey", "Family"]], on="BrandKey", how="inner")
-    fam_monthly = fam_series.groupby(["Family", "Mes Factura"], as_index=False).agg(Revenue_Month=("Revenue_Month", "sum"), Margin_EUR_Month=("Margin_EUR_Month", "sum"))
+    fam_monthly = build_monthly_overview(fam_series, current_month)
+    month_target = total_budget / max(current_month, 1) if current_month > 0 else 0
+    fam_monthly["Target_Month"] = month_target
+
+    fam_monthly["Conversion_Margin_Rate"] = np.where(
+        fam_monthly["Revenue_Month"] != 0,
+        fam_monthly["Margin_EUR_Month"] / fam_monthly["Revenue_Month"],
+        np.nan,
+    )
+    fam_monthly["Cost_per_Unit"] = np.where(
+        fam_monthly["Revenue_Month"] != 0,
+        (fam_monthly["Revenue_Month"] - fam_monthly["Margin_EUR_Month"]) / fam_monthly["Revenue_Month"],
+        np.nan,
+    )
+
+    outlier_mask, mean_revenue, std_revenue = detect_outliers(fam_monthly["Revenue_Month"], threshold=2.0)
+    fam_monthly["Revenue_Outlier"] = outlier_mask
+
+    st.subheader("Tendencias, eficiencia y alertas")
+    tcol1, tcol2, tcol3 = st.columns(3)
+    tcol1.metric("MoM Revenue (último mes)", fmt_pct(fam_monthly["MoM_Revenue_PCT"].dropna().mean() if fam_monthly["MoM_Revenue_PCT"].notna().any() else 0))
+    tcol2.metric("MoM Margin (último mes)", fmt_pct(fam_monthly["MoM_Margin_PCT"].dropna().mean() if fam_monthly["MoM_Margin_PCT"].notna().any() else 0))
+    tcol3.metric("Outliers detectados", f"{int(fam_monthly['Revenue_Outlier'].sum())}")
+
     flow = px.line(
         fam_monthly,
         x="Mes Factura",
         y="Revenue_Month",
         color="Family",
         markers=True,
-        title="Last Month Trend · Flujo mensual de ventas por Familia",
+        title="Tendencia mensual de ventas por familia",
+    )
+    flow.add_trace(
+        go.Scatter(
+            x=fam_monthly["Mes Factura"],
+            y=fam_monthly["Target_Month"],
+            mode="lines",
+            name="Target mensual",
+            line={"dash": "dash", "color": "#6b7280"},
+        )
     )
     flow.update_layout(xaxis_title="Mes", yaxis_title="Revenue (€)")
     st.plotly_chart(flow, use_container_width=True)
+
+    anomaly_view = fam_monthly[fam_monthly["Revenue_Outlier"]][["Family", "Mes Factura", "Revenue_Month", "MoM_Revenue_PCT"]]
+    if anomaly_view.empty:
+        st.info("No se detectaron outliers de revenue con umbral de 2 desviaciones estándar.")
+    else:
+        st.warning(
+            f"Se detectaron {len(anomaly_view)} outliers (media={fmt_eur(mean_revenue)}, desviación={fmt_eur(std_revenue)})."
+        )
+        st.dataframe(
+            anomaly_view.style.format({"Revenue_Month": fmt_eur, "MoM_Revenue_PCT": fmt_pct}),
+            use_container_width=True,
+        )
+
+    segment = fam_monthly.groupby(["Family", "Quarter"], as_index=False).agg(
+        Revenue=("Revenue_Month", "sum"),
+        Margin=("Margin_EUR_Month", "sum"),
+        Avg_Conversion=("Conversion_Margin_Rate", "mean"),
+        Avg_Cost_per_Unit=("Cost_per_Unit", "mean"),
+    )
+    st.subheader("Segmentación por familia y trimestre")
+    st.dataframe(
+        segment.style.format({
+            "Revenue": fmt_eur,
+            "Margin": fmt_eur,
+            "Avg_Conversion": fmt_pct,
+            "Avg_Cost_per_Unit": fmt_pct,
+        }),
+        use_container_width=True,
+    )
 
 elif section == "Margin":
     filtered_model = apply_dashboard_filters(model, "margin")
