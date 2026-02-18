@@ -768,6 +768,16 @@ def fmt_eur(v):
     return f"€{v:,.0f}"
 
 
+def fmt_eur_delta(v):
+    """Format KPI delta in € with sign first so Streamlit detects direction/colour."""
+    if pd.isna(v):
+        return "–"
+    sign = "+" if v > 0 else ""
+    if abs(v) >= 1_000_000:
+        return f"{sign}€{v / 1_000_000:,.2f}M"
+    return f"{sign}€{v:,.0f}"
+
+
 def fmt_pct(v):
     if pd.isna(v):
         return "–"
@@ -1157,7 +1167,7 @@ if section == "Resumen":
     c2.metric(
         "Attainment vs. Budget",
         fmt_pct(total_rev / total_budget if total_budget else 0),
-        delta=fmt_eur(total_rev - total_budget),
+        delta=fmt_eur_delta(total_rev - total_budget),
     )
     c3.metric(
         "Margen Bruto % YTD",
@@ -1573,17 +1583,17 @@ else:
         k1.metric(
             "Crecimiento Revenue",
             fmt_pct(pct_delta(agg["revenue"], agg["ly_rev"])),
-            delta=fmt_eur(agg["revenue"] - agg["ly_rev"]),
+            delta=fmt_eur_delta(agg["revenue"] - agg["ly_rev"]),
         )
         k2.metric(
             "Crecimiento Margen",
             fmt_pct(pct_delta(agg["margin"], agg["ly_margin"])),
-            delta=fmt_eur(agg["margin"] - agg["ly_margin"]),
+            delta=fmt_eur_delta(agg["margin"] - agg["ly_margin"]),
         )
         k3.metric(
             "Attainment vs. Budget",
             fmt_pct(pct_delta(agg["revenue"], agg["budget"])),
-            delta=fmt_eur(agg["revenue"] - agg["budget"]),
+            delta=fmt_eur_delta(agg["revenue"] - agg["budget"]),
         )
         k4.metric(
             "Stock (€) vs. Presupuesto Anual",
