@@ -126,8 +126,28 @@ def load_df_from_firebase(path: str) -> pd.DataFrame:
     raw = db.reference(path).get()
     if not raw:
         return pd.DataFrame()
+
+    def _coerce_rows_and_columns(rows, columns):
+        if isinstance(rows, dict):
+            try:
+                rows = [rows[k] for k in sorted(rows, key=lambda x: int(x) if str(x).isdigit() else str(x))]
+            except Exception:
+                rows = list(rows.values())
+        if rows is None:
+            rows = []
+        if not isinstance(rows, list):
+            rows = [rows]
+        if columns is None:
+            columns = []
+        if not isinstance(columns, list):
+            columns = list(columns) if hasattr(columns, "__iter__") and not isinstance(columns, str) else [columns]
+        return rows, [str(c) for c in columns]
+
     if isinstance(raw, dict) and "columns" in raw and "rows" in raw:
-        return pd.DataFrame(raw["rows"], columns=raw["columns"])
+        rows, columns = _coerce_rows_and_columns(raw.get("rows"), raw.get("columns"))
+        if rows and all(isinstance(item, dict) or hasattr(item, "items") for item in rows):
+            return pd.DataFrame.from_records([dict(item) for item in rows], columns=columns or None)
+        return pd.DataFrame(rows, columns=columns or None)
     if isinstance(raw, list):
         if all(isinstance(item, dict) or hasattr(item, "items") for item in raw):
             return pd.DataFrame.from_records([dict(item) for item in raw])
