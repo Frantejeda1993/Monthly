@@ -90,6 +90,15 @@ header {
 [data-testid="collapsedControl"] {
     display: block !important;
 }
+[data-testid="collapsedControl"] button {
+    min-width: 2.5rem !important;
+}
+[data-testid="collapsedControl"] button p {
+    display: none !important;
+}
+[data-testid="collapsedControl"] button span {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+}
 .stDeployButton { display: none; }
 .block-container { padding: 2rem 2.5rem 3rem !important; max-width: 100% !important; }
 
@@ -272,6 +281,21 @@ header {
     gap: 6px;
     margin-bottom: 1.5rem;
     align-items: center;
+}
+.top-filters-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 0.9rem 1rem 0.6rem;
+    margin-bottom: 1rem;
+}
+.top-filters-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 0.55rem;
 }
 .filter-pill {
     display: inline-flex;
@@ -460,8 +484,8 @@ CHART_TEMPLATE = dict(
     colorway=["#3B82F6", "#22C55E", "#F59E0B", "#64748B", "#A78BFA", "#F472B6"],
     xaxis=dict(gridcolor="#1C2333", zeroline=False, linecolor="#2A3548", tickcolor="#64748B"),
     yaxis=dict(gridcolor="#1C2333", zeroline=False, linecolor="#2A3548", tickcolor="#64748B"),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
-    margin=dict(t=60, b=40, l=50, r=20),
+    legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
+    margin=dict(t=88, b=40, l=50, r=20),
     hoverlabel=dict(bgcolor="#1C2333", bordercolor="#2A3548", font=dict(color="#F1F5F9")),
 )
 
@@ -1206,11 +1230,11 @@ def build_monthly_overview(fam_series: pd.DataFrame, current_month: int) -> pd.D
         Revenue_Month=("Revenue_Month", "sum"),
         Margin_EUR_Month=("Margin_EUR_Month", "sum"),
     )
-    monthly = monthly[monthly["Mes Factura"].between(1, current_month, inclusive="both")].copy()
+    monthly = monthly[monthly["Mes Factura"].between(0, current_month, inclusive="both")].copy()
     monthly = monthly.sort_values(["Family", "Mes Factura"])
     monthly["MoM_Revenue_PCT"] = monthly.groupby("Family")["Revenue_Month"].pct_change()
     monthly["MoM_Margin_PCT"]  = monthly.groupby("Family")["Margin_EUR_Month"].pct_change()
-    monthly["Quarter"] = ((monthly["Mes Factura"] - 1) // 3) + 1
+    monthly["Quarter"] = np.where(monthly["Mes Factura"] == 0, np.nan, ((monthly["Mes Factura"] - 1) // 3) + 1)
     monthly["Margin_Rate"] = np.where(
         monthly["Revenue_Month"] != 0, monthly["Margin_EUR_Month"] / monthly["Revenue_Month"], np.nan
     )
@@ -1264,6 +1288,9 @@ def section_label(text: str, help_text: str = ""):
 
 def kpi_card(label: str, value: str, delta: str = "", delta_dir: str = "neu", help_text: str = ""):
     """Render a custom KPI card (used for hero metrics)."""
+    label = str(label)
+    value = str(value)
+    delta = str(delta)
     delta_class = f"kpi-delta {delta_dir}"
     delta_icon = "▲" if delta_dir == "pos" else ("▼" if delta_dir == "neg" else "")
     delta_html = f'<div class="{delta_class}">{delta_icon} {delta}</div>' if delta else ""
@@ -1290,14 +1317,16 @@ def filter_banner(selected_families: list, selected_brands: list):
 
 
 def apply_dashboard_filters(df: pd.DataFrame, section_name: str, default_family=None):
-    st.sidebar.markdown('<div class="sidebar-section">Filtros</div>', unsafe_allow_html=True)
+    st.markdown('<div class="top-filters-wrap"><div class="top-filters-label">Filtros</div>', unsafe_allow_html=True)
 
     families = sorted(df["Family"].dropna().astype(str).unique().tolist())
-    selected_families = st.sidebar.multiselect(
-        "Verticales", options=families, default=[],
-        placeholder="Sin selección = todos",
-        key=f"families_{section_name}",
-    )
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_families = st.multiselect(
+            "Verticales", options=families, default=[],
+            placeholder="Sin selección = todos",
+            key=f"families_{section_name}",
+        )
 
     if selected_families:
         filtered = df[df["Family"].isin(selected_families)].copy()
@@ -1307,13 +1336,16 @@ def apply_dashboard_filters(df: pd.DataFrame, section_name: str, default_family=
         filtered = df.copy()
 
     brand_options = sorted(filtered["Brand"].dropna().astype(str).unique().tolist())
-    selected_brands = st.sidebar.multiselect(
-        "Marcas", options=brand_options, default=[],
-        placeholder="Sin selección = todas",
-        key=f"brands_{section_name}",
-    )
+    with col2:
+        selected_brands = st.multiselect(
+            "Marcas", options=brand_options, default=[],
+            placeholder="Sin selección = todas",
+            key=f"brands_{section_name}",
+        )
     if selected_brands:
         filtered = filtered[filtered["Brand"].isin(selected_brands)].copy()
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     return filtered, selected_families, selected_brands
 
@@ -1876,13 +1908,18 @@ if "Resumen" in section:
         ))
     apply_chart_style(flow)
     flow.update_layout(
-        xaxis=dict(tickvals=list(range(1, 13)), ticktext=list(MONTHS_ES.values()), gridcolor="#1C2333"),
+        xaxis=dict(
+            tickvals=[0, *list(range(1, 13))],
+            ticktext=["Dic LY", *list(MONTHS_ES.values())],
+            range=[-0.1, 12],
+            gridcolor="#1C2333",
+        ),
         yaxis_title="Revenue (€)",
     )
     flow.update_traces(selector=dict(mode="lines+markers"), line=dict(width=2.5))
     st.plotly_chart(flow, use_container_width=True)
 
-    anomaly_view = fam_monthly[fam_monthly["Revenue_Outlier"]][
+    anomaly_view = fam_monthly[(fam_monthly["Revenue_Outlier"]) & (fam_monthly["Mes Factura"] > 0)][
         ["Family", "Mes Factura", "Revenue_Month", "MoM_Revenue_PCT"]
     ]
     if not anomaly_view.empty:
@@ -1899,7 +1936,8 @@ if "Resumen" in section:
 
     # ── Quarterly segmentation ─────────────────────────────────────────────────
     section_label("Segmentación trimestral")
-    segment = fam_monthly.groupby(["Family", "Quarter"], as_index=False).agg(
+    segment_base = fam_monthly[fam_monthly["Mes Factura"] > 0].copy()
+    segment = segment_base.groupby(["Family", "Quarter"], as_index=False).agg(
         Revenue=("Revenue_Month", "sum"), Margin=("Margin_EUR_Month", "sum"),
     )
     segment["Tasa Margen %"] = np.where(segment["Revenue"] != 0, segment["Margin"] / segment["Revenue"], np.nan)
@@ -2172,6 +2210,7 @@ else:
         xaxis=dict(
             tickvals=[0, *list(range(1, 13))],
             ticktext=["Dic LY", *list(MONTHS_ES.values())],
+            range=[-0.1, 12],
             gridcolor="#1C2333",
         ),
         yaxis_title="Revenue (€)",
