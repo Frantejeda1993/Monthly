@@ -75,7 +75,13 @@ html, body, [class*="css"], .stApp {
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* ── Hide Streamlit chrome ── */
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
+header {
+    background: transparent !important;
+}
+[data-testid="collapsedControl"] {
+    display: block !important;
+}
 .stDeployButton { display: none; }
 .block-container { padding: 2rem 2.5rem 3rem !important; max-width: 100% !important; }
 
@@ -1295,50 +1301,71 @@ with st.sidebar:
             - `databaseURL` ✓?
             """)
 
-    st.markdown('<div class="sidebar-section">Datos de entrada</div>', unsafe_allow_html=True)
-
-    with st.expander("📥 Subir archivos", expanded=False):
-        up_sales  = st.file_uploader("Ventas mensuales", type=["xlsx"], key="sales",
-                                     help="INPUT (Monthly) Sales")
-        st.markdown('<div style="font-size:0.8rem;color:#64748B;margin-top:8px;">Stock por mes</div>',
-                    unsafe_allow_html=True)
-        stock_uploads = {}
-        for month_idx in range(1, 13):
-            stock_uploads[month_idx] = st.file_uploader(
-                MONTHS_ES[month_idx], type=["xlsx"], key=f"stock_{month_idx}"
-            )
-        up_margin = st.file_uploader("Margen año anterior", type=["xlsx"], key="margin",
-                                     help="INPUT (Annual) MARGIN LY")
-
-    if st.button("💾 Guardar en Firebase", disabled=not firebase_ok, use_container_width=True):
-        with st.spinner("Guardando…"):
-            try:
-                if up_sales:
-                    save_df_to_firebase(
-                        "datasets/monthly_sales",
-                        validate_dataset(read_sheet(up_sales, "INPUT (Monthly) Sales"), "sales", "Ventas"),
-                    )
-                stock_frames = []
-                for month_idx, up_stock in stock_uploads.items():
-                    if not up_stock: continue
-                    sm = validate_dataset(
-                        read_sheet(up_stock, "INPUT (Monthly) Stock"), "stock", f"Stock · {MONTHS_ES[month_idx]}"
-                    )
-                    sm["Mes"] = month_idx
-                    stock_frames.append(sm)
-                if stock_frames:
-                    save_df_to_firebase("datasets/monthly_stock", pd.concat(stock_frames, ignore_index=True))
-                if up_margin:
-                    save_df_to_firebase(
-                        "datasets/annual_margin_ly",
-                        validate_dataset(read_sheet(up_margin, "INPUT (Annual) MARGIN LY"), "margin_ly", "Margen LY"),
-                    )
-                invalidate_firebase_cache()
-                st.success("✓ Datos guardados correctamente.")
-            except Exception as e:
-                st.error(str(e))
+    st.markdown('<div class="sidebar-section">Sección</div>', unsafe_allow_html=True)
+    MAIN_SECTIONS = [
+        "📊  Resumen",
+        "📈  Margen",
+        "🚲  2 Wheels",
+        "🎮  Free Time",
+        "🏕️  Outdoor Tech",
+    ]
+    selected_main_section = st.radio("Ir a", MAIN_SECTIONS, key="section_selector", label_visibility="collapsed")
 
     st.markdown("---")
+    with st.expander("⚙️", expanded=False):
+        open_config = st.toggle("Pantalla de configuración", key="open_config_section")
+
+        st.markdown('<div class="sidebar-section">Período</div>', unsafe_allow_html=True)
+        selected_month = st.selectbox(
+            "Mes actual",
+            options=list(range(1, 13)),
+            index=datetime.now().month - 1,
+            format_func=lambda m: f"{MONTHS_ES[m]} ({m:02d})",
+            key="month_selector",
+        )
+
+        st.markdown('<div class="sidebar-section">Datos de entrada</div>', unsafe_allow_html=True)
+        with st.expander("📥 Subir archivos", expanded=False):
+            up_sales  = st.file_uploader("Ventas mensuales", type=["xlsx"], key="sales",
+                                         help="INPUT (Monthly) Sales")
+            st.markdown('<div style="font-size:0.8rem;color:#64748B;margin-top:8px;">Stock por mes</div>',
+                        unsafe_allow_html=True)
+            stock_uploads = {}
+            for month_idx in range(1, 13):
+                stock_uploads[month_idx] = st.file_uploader(
+                    MONTHS_ES[month_idx], type=["xlsx"], key=f"stock_{month_idx}"
+                )
+            up_margin = st.file_uploader("Margen año anterior", type=["xlsx"], key="margin",
+                                         help="INPUT (Annual) MARGIN LY")
+
+            if st.button("💾 Guardar en Firebase", disabled=not firebase_ok, use_container_width=True):
+                with st.spinner("Guardando…"):
+                    try:
+                        if up_sales:
+                            save_df_to_firebase(
+                                "datasets/monthly_sales",
+                                validate_dataset(read_sheet(up_sales, "INPUT (Monthly) Sales"), "sales", "Ventas"),
+                            )
+                        stock_frames = []
+                        for month_idx, up_stock in stock_uploads.items():
+                            if not up_stock:
+                                continue
+                            sm = validate_dataset(
+                                read_sheet(up_stock, "INPUT (Monthly) Stock"), "stock", f"Stock · {MONTHS_ES[month_idx]}"
+                            )
+                            sm["Mes"] = month_idx
+                            stock_frames.append(sm)
+                        if stock_frames:
+                            save_df_to_firebase("datasets/monthly_stock", pd.concat(stock_frames, ignore_index=True))
+                        if up_margin:
+                            save_df_to_firebase(
+                                "datasets/annual_margin_ly",
+                                validate_dataset(read_sheet(up_margin, "INPUT (Annual) MARGIN LY"), "margin_ly", "Margen LY"),
+                            )
+                        invalidate_firebase_cache()
+                        st.success("✓ Datos guardados correctamente.")
+                    except Exception as e:
+                        st.error(str(e))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1409,33 +1436,13 @@ if total_budget_check > 0 and (auto_spread_budget / total_budget_check) > 0.2:
     </div>
     """, unsafe_allow_html=True)
 
-st.sidebar.markdown("---")
-
-# Period selector
 available_months = sorted(sales_df["Mes Factura"].dropna().astype(int).unique().tolist())
 if not available_months:
     st.error("Dataset sin meses válidos (1–12). Revisa el archivo de ventas.")
     st.stop()
 
-st.sidebar.markdown('<div class="sidebar-section">Período</div>', unsafe_allow_html=True)
-current_month = st.sidebar.selectbox(
-    "Mes actual",
-    options=available_months,
-    index=len(available_months) - 1,
-    format_func=lambda m: f"{MONTHS_ES[m]} ({m:02d})",
-)
-
-# Navigation
-st.sidebar.markdown('<div class="sidebar-section">Sección</div>', unsafe_allow_html=True)
-SECTIONS = [
-    "⚙️  Configuración",
-    "📊  Resumen",
-    "📈  Margen",
-    "🚲  2 Wheels",
-    "🎮  Free Time",
-    "🏕️  Outdoor Tech",
-]
-section = st.sidebar.radio("Ir a", SECTIONS, key="section_selector", label_visibility="collapsed")
+current_month = selected_month if selected_month in available_months else available_months[-1]
+section = "⚙️  Configuración" if open_config else selected_main_section
 
 
 # ══════════════════════════════════════════════════════════════════════════════
