@@ -538,6 +538,37 @@ def _normalize_database_url(value):
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def _get_app_password() -> str:
+    secrets = _to_plain_dict(st.secrets)
+    if not isinstance(secrets, dict):
+        return ""
+    return str(secrets.get("APP_PASSWORD", "")).strip()
+
+
+def require_app_password() -> None:
+    expected_password = _get_app_password()
+    if not expected_password:
+        return
+
+    if st.session_state.get("authenticated", False):
+        return
+
+    st.markdown("""
+    <div class="alert alert-warn" style="max-width:520px;">
+        🔒 Esta aplicación está protegida. Introduce la contraseña para continuar.
+    </div>
+    """, unsafe_allow_html=True)
+
+    entered_password = st.text_input("Contraseña", type="password", key="app_password")
+    if st.button("Entrar", type="primary"):
+        if entered_password == expected_password:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
+    st.stop()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FIREBASE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1222,6 +1253,8 @@ def apply_chart_style(fig, yformat: str = "€,.0f", percent_y: bool = False):
 # ══════════════════════════════════════════════════════════════════════════════
 # APP BOOT — Firebase + Sidebar
 # ══════════════════════════════════════════════════════════════════════════════
+
+require_app_password()
 
 firebase_ok, firebase_msg, config_source = init_firebase()
 
