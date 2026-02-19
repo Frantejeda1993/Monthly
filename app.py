@@ -69,6 +69,14 @@ html, body, [class*="css"], .stApp {
     color: var(--text-1) !important;
 }
 
+/* Keep Streamlit icon fonts intact */
+span.material-icons,
+span.material-symbols-outlined,
+span.material-symbols-rounded,
+i.material-icons {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--surface); }
@@ -193,6 +201,49 @@ header {
 .kpi-delta.neg { color: var(--red); }
 .kpi-delta.neu { color: var(--text-3); }
 .kpi-help { font-size: 0.72rem; color: var(--text-3); margin-top: 0.25rem; }
+.help-icon-wrap {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    z-index: 5;
+}
+.help-icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid var(--border-light);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    cursor: help;
+    user-select: none;
+}
+.help-tooltip {
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    position: absolute;
+    right: 0;
+    top: 22px;
+    width: 240px;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-light);
+    color: var(--text-2);
+    font-size: 0.72rem;
+    text-transform: none;
+    letter-spacing: 0;
+    white-space: normal;
+    box-shadow: var(--shadow-sm);
+}
+.help-icon-wrap:hover .help-tooltip {
+    visibility: visible;
+    opacity: 1;
+}
 
 /* ── Section headers ── */
 .section-label {
@@ -205,6 +256,7 @@ header {
     display: flex;
     align-items: center;
     gap: 8px;
+    position: relative;
 }
 .section-label::after {
     content: '';
@@ -1088,6 +1140,15 @@ def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     )
 
     monthly_by_brand = monthly_sales[monthly_sales["Mes Factura"] <= current_month].copy()
+    if "LY_M12_Rev" in ly.columns:
+        dec_ly = ly[["BrandKey", "LY_M12_Rev"]].copy()
+        dec_ly["Mes Factura"] = 0
+        dec_ly["Revenue_Month"] = pd.to_numeric(dec_ly["LY_M12_Rev"], errors="coerce").fillna(0)
+        dec_ly["Margin_EUR_Month"] = np.nan
+        monthly_by_brand = pd.concat(
+            [dec_ly[["BrandKey", "Mes Factura", "Revenue_Month", "Margin_EUR_Month"]], monthly_by_brand],
+            ignore_index=True,
+        )
     return model, monthly_by_brand
 
 
@@ -1183,8 +1244,22 @@ def page_header(title: str, subtitle: str = ""):
     """, unsafe_allow_html=True)
 
 
-def section_label(text: str):
-    st.markdown(f'<div class="section-label">{text}</div>', unsafe_allow_html=True)
+def hover_help_icon(help_text: str) -> str:
+    if not help_text:
+        return ""
+    return f"""
+    <div class=\"help-icon-wrap\">
+        <div class=\"help-icon\">?</div>
+        <div class=\"help-tooltip\">{help_text}</div>
+    </div>
+    """
+
+
+def section_label(text: str, help_text: str = ""):
+    st.markdown(
+        f'<div class="section-label">{text}{hover_help_icon(help_text)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def kpi_card(label: str, value: str, delta: str = "", delta_dir: str = "neu", help_text: str = ""):
@@ -1192,13 +1267,13 @@ def kpi_card(label: str, value: str, delta: str = "", delta_dir: str = "neu", he
     delta_class = f"kpi-delta {delta_dir}"
     delta_icon = "▲" if delta_dir == "pos" else ("▼" if delta_dir == "neg" else "")
     delta_html = f'<div class="{delta_class}">{delta_icon} {delta}</div>' if delta else ""
-    help_html  = f'<div class="kpi-help">{help_text}</div>' if help_text else ""
+    help_html = hover_help_icon(help_text)
     st.markdown(f"""
     <div class="kpi-card">
+        {help_html}
         <div class="kpi-label">{label}</div>
         <div class="kpi-value">{value}</div>
         {delta_html}
-        {help_html}
     </div>
     """, unsafe_allow_html=True)
 
@@ -1587,7 +1662,7 @@ if "Resumen" in section:
     total_annual_budget= filtered_model["Annual Budget"].sum()
 
     # ── Tier 1: Hero KPIs ─────────────────────────────────────────────────────
-    section_label("Indicadores clave")
+    section_label("Indicadores clave", help_text="KPIs principales del vertical. Pasa el mouse sobre ? para ver cálculo.")
     c1, c2, c3 = st.columns(3)
     with c1:
         delta = pct_delta(total_rev, total_rev_ly)
@@ -1636,7 +1711,7 @@ if "Resumen" in section:
     fam_agg["Attainment"] = fam_agg.apply(lambda r: safe_ratio(r["Revenue_YTD"], r["Budget_YTD"]), axis=1)
     fam_agg["Margen_Rate"] = fam_agg.apply(lambda r: safe_ratio(r["Margin_EUR_YTD"], r["Revenue_YTD"]), axis=1)
 
-    section_label("Desglose por vertical")
+    section_label("Desglose por vertical", help_text="Comparación de revenue, presupuesto y attainment por vertical.")
     col_chart1, col_chart2 = st.columns(2)
 
     with col_chart1:
@@ -1672,7 +1747,7 @@ if "Resumen" in section:
         st.plotly_chart(fig_att, use_container_width=True)
 
     # ── KPI table ─────────────────────────────────────────────────────────────
-    section_label("KPIs por vertical")
+    section_label("KPIs por vertical", help_text="Resumen por vertical con crecimiento, margen y cobertura de stock.")
     overview_fam = filtered_model.groupby("Family", as_index=False).agg(
         Revenue_YTD           =("Revenue_YTD", "sum"),
         Margin_EUR_YTD        =("Margin_EUR_YTD", "sum"),
@@ -1878,7 +1953,7 @@ elif "Margen" in section:
                   help="pp de diferencia en tasa de margen. Positivo = mejora de mix/precio, no solo volumen.")
 
     # ── Brand detail table ─────────────────────────────────────────────────────
-    section_label("Detalle por marca")
+    section_label("Detalle por marca", help_text="Tabla por marca con desempeño YTD, variaciones y presupuesto.")
     table = filtered_model[[
         "Brand", "Short Name", "Status", "Family",
         "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD",
@@ -1984,30 +2059,33 @@ else:
     }
 
     # ── Tier 1: Hero KPIs ─────────────────────────────────────────────────────
-    section_label("Indicadores clave")
+    section_label("Indicadores clave", help_text="KPIs principales del vertical. Pasa el mouse sobre ? para ver cálculo.")
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         delta = pct_delta(agg["revenue"], agg["ly_rev"])
         dir_  = "pos" if not pd.isna(delta) and delta >= 0 else "neg"
         kpi_card("Crecimiento Revenue", fmt_pct(delta),
-                 delta=fmt_eur_delta(agg["revenue"] - agg["ly_rev"]), delta_dir=dir_)
+                 delta=fmt_eur_delta(agg["revenue"] - agg["ly_rev"]), delta_dir=dir_,
+                 help_text="(Revenue YTD / Revenue LY YTD) - 1")
     with k2:
         delta = pct_delta(agg["margin"], agg["ly_margin"])
         dir_  = "pos" if not pd.isna(delta) and delta >= 0 else "neg"
         kpi_card("Crecimiento Margen", fmt_pct(delta),
-                 delta=fmt_eur_delta(agg["margin"] - agg["ly_margin"]), delta_dir=dir_)
+                 delta=fmt_eur_delta(agg["margin"] - agg["ly_margin"]), delta_dir=dir_,
+                 help_text="(Margen YTD / Margen LY YTD) - 1")
     with k3:
         att  = pct_delta(agg["revenue"], agg["budget"])
         dir_ = "pos" if not pd.isna(att) and att >= 0 else "neg"
         kpi_card("Attainment vs. Budget", fmt_pct(att),
-                 delta=fmt_eur_delta(agg["revenue"] - agg["budget"]), delta_dir=dir_)
+                 delta=fmt_eur_delta(agg["revenue"] - agg["budget"]), delta_dir=dir_,
+                 help_text="(Revenue YTD / Presupuesto YTD) - 1")
     with k4:
         stock_ratio = safe_ratio(agg["stock"], agg["annual_budget"])
         kpi_card("Stock vs. Ppto Anual", fmt_pct(stock_ratio),
                  help_text="Stock (€) / Presupuesto anual (€)")
 
     # ── Tier 2: Trend ─────────────────────────────────────────────────────────
-    section_label("Tendencia del mes")
+    section_label("Tendencia del mes", help_text="Compara el mes actual contra el mes anterior para revenue y margen.")
     t1, t2, t3 = st.columns(3)
     t1.metric(f"Revenue MoM · {MONTHS_ES[current_month]}",
               fmt_pct(pct_delta(agg["cur_month_rev"], agg["prev_month_rev"])))
@@ -2018,7 +2096,7 @@ else:
               help="Margen € / Revenue €. Rentabilidad bruta del vertical.")
 
     # ── Brand detail table ─────────────────────────────────────────────────────
-    section_label("Detalle por marca")
+    section_label("Detalle por marca", help_text="Tabla por marca con desempeño YTD, variaciones y presupuesto.")
     brand_view = sub[[
         "Short Name", "Status", "Revenue_YTD", "Margin_EUR_YTD", "Margin_PCT_YTD",
         "LY_Rev_YTD", "LY_MgEur_YTD", "Budget_YTD",
@@ -2047,11 +2125,19 @@ else:
             "Growth_vs_LY_Revenue_PCT", "Growth_vs_LY_Margin_PCT", "Margin_Rate_vs_LY",
             "Vs_Budget_PCT", "Last_Month_Trend_Revenue_PCT", "Last_Month_Trend_Margin_PCT",
         ]),
+        column_config={
+            "Revenue_YTD": st.column_config.NumberColumn("Revenue YTD", help="Ventas acumuladas del año actual."),
+            "Margin_EUR_YTD": st.column_config.NumberColumn("Margen € YTD", help="Margen acumulado en euros del año actual."),
+            "Margin_PCT_YTD": st.column_config.NumberColumn("Margen % YTD", help="Margen € YTD / Revenue YTD."),
+            "Growth_vs_LY_Revenue_PCT": st.column_config.NumberColumn("Crec. Rev vs LY", help="(Revenue YTD / Revenue LY YTD) - 1."),
+            "Growth_vs_LY_Margin_PCT": st.column_config.NumberColumn("Crec. Margen vs LY", help="(Margen YTD / Margen LY YTD) - 1."),
+            "Vs_Budget_PCT": st.column_config.NumberColumn("Vs Budget", help="(Revenue YTD / Presupuesto YTD) - 1."),
+        },
         use_container_width=True,
     )
 
     # ── Monthly trend ──────────────────────────────────────────────────────────
-    section_label("Tendencia mensual por marca")
+    section_label("Tendencia mensual por marca", help_text="Serie mensual de revenue por marca del vertical, incluyendo Dic-LY como punto base.")
     monthly_vertical = monthly_brand_series.merge(
         sub[["BrandKey", "Short Name"]], on="BrandKey", how="inner"
     )
@@ -2083,8 +2169,13 @@ else:
 
     apply_chart_style(fig)
     fig.update_layout(
-        xaxis=dict(tickvals=list(range(1, 13)), ticktext=list(MONTHS_ES.values()), gridcolor="#1C2333"),
+        xaxis=dict(
+            tickvals=[0, *list(range(1, 13))],
+            ticktext=["Dic LY", *list(MONTHS_ES.values())],
+            gridcolor="#1C2333",
+        ),
         yaxis_title="Revenue (€)",
+        legend_title_text="",
     )
     fig.update_traces(line=dict(width=2.5))
     st.plotly_chart(fig, use_container_width=True)
