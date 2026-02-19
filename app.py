@@ -4,6 +4,7 @@ A production-grade SaaS analytics platform for brand portfolio management.
 """
 
 import re
+import html
 import unicodedata
 from datetime import datetime, timezone
 from io import BytesIO
@@ -98,6 +99,14 @@ header {
 }
 [data-testid="collapsedControl"] button span {
     font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+}
+[data-testid="stIconMaterial"],
+[data-testid="stSidebar"] [data-testid="stIconMaterial"],
+[data-testid="stExpander"] [data-testid="stIconMaterial"],
+[data-testid="collapsedControl"] [data-testid="stIconMaterial"] {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+    font-feature-settings: "liga" 1;
+    -webkit-font-feature-settings: "liga" 1;
 }
 .stDeployButton { display: none; }
 .block-container { padding: 2rem 2.5rem 3rem !important; max-width: 100% !important; }
@@ -1288,21 +1297,24 @@ def section_label(text: str, help_text: str = ""):
 
 def kpi_card(label: str, value: str, delta: str = "", delta_dir: str = "neu", help_text: str = ""):
     """Render a custom KPI card (used for hero metrics)."""
-    label = str(label)
-    value = str(value)
-    delta = str(delta)
+    label = html.escape(str(label))
+    value = html.escape(str(value))
+    delta = html.escape(str(delta)) if delta else ""
     delta_class = f"kpi-delta {delta_dir}"
     delta_icon = "▲" if delta_dir == "pos" else ("▼" if delta_dir == "neg" else "")
     delta_html = f'<div class="{delta_class}">{delta_icon} {delta}</div>' if delta else ""
     help_html = hover_help_icon(help_text)
-    st.markdown(f"""
-    <div class="kpi-card">
-        {help_html}
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
-        {delta_html}
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        (
+            f"<div class=\"kpi-card\">"
+            f"{help_html}"
+            f"<div class=\"kpi-label\">{label}</div>"
+            f"<div class=\"kpi-value\">{value}</div>"
+            f"{delta_html}"
+            f"</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def filter_banner(selected_families: list, selected_brands: list):
