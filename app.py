@@ -366,6 +366,15 @@ header {
 [data-testid="stMetricLabel"] { color: var(--text-3) !important; font-size: 0.75rem !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.06em; }
 [data-testid="stMetricValue"] { color: var(--text-1) !important; font-family: var(--font-mono) !important; }
 [data-testid="stMetricDelta"] svg { display: none; }
+[data-testid="stMetricLabel"] [data-testid="stTooltipIcon"] {
+    color: var(--text-2) !important;
+    opacity: 1 !important;
+    display: inline-flex !important;
+    visibility: visible !important;
+}
+[data-testid="stMetricLabel"] [data-testid="stTooltipIcon"] * {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+}
 
 /* Buttons */
 .stButton > button {
@@ -1175,9 +1184,11 @@ def prepare_model(df_sales, df_stock, df_margin_ly, brand_cfg, current_month):
     monthly_by_brand = monthly_sales[monthly_sales["Mes Factura"] <= current_month].copy()
     if "LY_M12_Rev" in ly.columns:
         dec_ly = ly[["BrandKey", "LY_M12_Rev"]].copy()
+        if "LY_M12_MgEur" in ly.columns:
+            dec_ly["LY_M12_MgEur"] = ly["LY_M12_MgEur"]
         dec_ly["Mes Factura"] = 0
         dec_ly["Revenue_Month"] = pd.to_numeric(dec_ly["LY_M12_Rev"], errors="coerce").fillna(0)
-        dec_ly["Margin_EUR_Month"] = np.nan
+        dec_ly["Margin_EUR_Month"] = pd.to_numeric(dec_ly.get("LY_M12_MgEur", np.nan), errors="coerce")
         monthly_by_brand = pd.concat(
             [dec_ly[["BrandKey", "Mes Factura", "Revenue_Month", "Margin_EUR_Month"]], monthly_by_brand],
             ignore_index=True,
@@ -1365,6 +1376,10 @@ def apply_dashboard_filters(df: pd.DataFrame, section_name: str, default_family=
 def apply_chart_style(fig, yformat: str = "€,.0f", percent_y: bool = False):
     """Apply consistent dark-mode chart styling."""
     fig.update_layout(**CHART_TEMPLATE)
+    fig.update_layout(
+        margin=dict(t=120, b=40, l=50, r=20),
+        title=dict(x=0.5, xanchor="center", y=0.98, yanchor="top", pad=dict(t=8, b=16)),
+    )
     yaxis_cfg = dict(gridcolor="#1C2333", zeroline=False)
     if percent_y:
         yaxis_cfg["tickformat"] = ".1%"
@@ -1775,7 +1790,7 @@ if "Resumen" in section:
 
     with col_chart2:
         fam_att = fam_agg.copy()
-        fam_att["Color"] = fam_att["Attainment"].apply(lambda v: "#22C55E" if v >= 1 else "#EF4444")
+        fam_att["Color"] = fam_att["Family"].map(FAMILY_COLORS).fillna("#64748B")
         fig_att = go.Figure()
         fig_att.add_trace(go.Bar(
             x=fam_att["Family"], y=fam_att["Attainment"],
@@ -1886,8 +1901,21 @@ if "Resumen" in section:
 
     family_budgets = filtered_model.groupby("Family")[MONTH_BUDGET_COLS].sum()
 
-    last_mom_rev = fam_monthly.sort_values("Mes Factura").groupby("Family")["MoM_Revenue_PCT"].last().dropna()
-    last_mom_mg  = fam_monthly.sort_values("Mes Factura").groupby("Family")["MoM_Margin_PCT"].last().dropna()
+    fam_monthly_sorted = fam_monthly.sort_values("Mes Factura")
+    if current_month == 1:
+        jan_mom = (
+            fam_monthly_sorted[fam_monthly_sorted["Mes Factura"].isin([0, 1])]
+            .pivot_table(index="Family", columns="Mes Factura", values=["Revenue_Month", "Margin_EUR_Month"], aggfunc="sum")
+        )
+        jan_rev = jan_mom.get(("Revenue_Month", 1), pd.Series(dtype=float))
+        dec_rev = jan_mom.get(("Revenue_Month", 0), pd.Series(dtype=float))
+        jan_mg = jan_mom.get(("Margin_EUR_Month", 1), pd.Series(dtype=float))
+        dec_mg = jan_mom.get(("Margin_EUR_Month", 0), pd.Series(dtype=float))
+        last_mom_rev = ((jan_rev / dec_rev.replace(0, np.nan)) - 1).dropna()
+        last_mom_mg = ((jan_mg / dec_mg.replace(0, np.nan)) - 1).dropna()
+    else:
+        last_mom_rev = fam_monthly_sorted.groupby("Family")["MoM_Revenue_PCT"].last().dropna()
+        last_mom_mg  = fam_monthly_sorted.groupby("Family")["MoM_Margin_PCT"].last().dropna()
     portfolio_mom_rev = last_mom_rev.mean() if not last_mom_rev.empty else 0
     portfolio_mom_mg  = last_mom_mg.mean()  if not last_mom_mg.empty  else 0
 
