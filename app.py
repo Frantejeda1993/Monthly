@@ -1460,14 +1460,30 @@ with st.sidebar:
 
         st.markdown('<div class="sidebar-section">Datos de entrada</div>', unsafe_allow_html=True)
         with st.expander("📥 Subir archivos", expanded=False):
-            up_sales  = st.file_uploader("Ventas mensuales", type=["xlsx"], key="sales",
-                                         help="INPUT (Monthly) Sales")
+            sales_format_help = (
+                "Formato requerido (.xlsx, hoja 'INPUT (Monthly) Sales'). "
+                "Orden de columnas: 1) Nombre, 2) Importe Neto, 3) Mes Factura (o Fecha). "
+                "Opcional: CR3: % Margen s/Venta."
+            )
+            stock_format_help = (
+                "Formato requerido (.xlsx, hoja 'INPUT (Monthly) Stock'). "
+                "Orden de columnas: 1) Marca, 2) Codigo Articulo, 3) Importe."
+            )
+            up_sales  = st.file_uploader(
+                "Ventas mensuales",
+                type=["xlsx"],
+                key="sales",
+                help=sales_format_help,
+            )
             st.markdown('<div style="font-size:0.8rem;color:#64748B;margin-top:8px;">Stock por mes</div>',
                         unsafe_allow_html=True)
             stock_uploads = {}
             for month_idx in range(1, 13):
                 stock_uploads[month_idx] = st.file_uploader(
-                    MONTHS_ES[month_idx], type=["xlsx"], key=f"stock_{month_idx}"
+                    MONTHS_ES[month_idx],
+                    type=["xlsx"],
+                    key=f"stock_{month_idx}",
+                    help=stock_format_help,
                 )
             up_margin = st.file_uploader("Margen año anterior", type=["xlsx"], key="margin",
                                          help="INPUT (Annual) MARGIN LY")
